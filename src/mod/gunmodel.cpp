@@ -525,7 +525,17 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
         uint8_t reloading = 0;
         float progress = 0;
         if (w) safe_copy(&reloading, w + 0x764, 1), safe_copy(&progress, w + 0x76C, 4);
-        out = g_vr.clip_anim ? vr::clip_out_fraction(reloading != 0, progress) : 0;
+        // The flag's last change (per weapon object) and how far out the magazine was then.
+        static uintptr_t anim_w;
+        static bool anim_reloading;
+        static ULONGLONG anim_t;
+        static float anim_out0, anim_last;
+        const ULONGLONG now = GetTickCount64();
+        if (w != anim_w) anim_w = w, anim_reloading = reloading != 0, anim_t = now - 10000, anim_out0 = 0, anim_last = 0;
+        if ((reloading != 0) != anim_reloading) anim_reloading = reloading != 0, anim_t = now, anim_out0 = anim_last;
+        if (!(progress >= 0 && progress <= 2)) progress = 0;
+        anim_last = vr::clip_out_fraction(anim_reloading, progress, float(now - anim_t) / 1000.f, anim_out0);
+        out = g_vr.clip_anim ? anim_last : 0;
         if (g_force_clip >= 0) out = g_force_clip;
         float d[3] = {p.desc.clip_dir[0], p.desc.clip_dir[1], p.desc.clip_dir[2]};
         const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);

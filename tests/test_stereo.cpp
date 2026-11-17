@@ -553,13 +553,22 @@ static void test_drawn_barrel_is_the_shot_ray() {
 }
 
 static void test_clip_out_fraction() {
-    CHECK_NEAR(clip_out_fraction(false, 0.5f), 0, 0);
-    CHECK_NEAR(clip_out_fraction(true, 0), 0, 1e-6);
-    CHECK_NEAR(clip_out_fraction(true, 0.1f), 0.5, 1e-6);
-    CHECK_NEAR(clip_out_fraction(true, 0.4f), 1, 0);
-    CHECK(clip_out_fraction(true, 0.7f) > 0 && clip_out_fraction(true, 0.7f) < 1);
-    CHECK_NEAR(clip_out_fraction(true, 0.85f), 0, 1e-6);
-    CHECK_NEAR(clip_out_fraction(true, 1.0f), 0, 1e-6);
+    // Not reloading, nothing out: seated.
+    CHECK_NEAR(clip_out_fraction(false, 0.5f, 3, 0), 0, 0);
+    // Reload starts: drops out over 0.15 s even while the progress still reads 0.
+    CHECK_NEAR(clip_out_fraction(true, 0, 0, 0), 0, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 0, 0.075f, 0), 0.5, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 0, 0.5f, 0), 1, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 0.4f, 0.5f, 0), 1, 1e-6);
+    // Back in as the progress goes from 0.6 to 0.85: seated before the reload ends.
+    const float mid = clip_out_fraction(true, 0.7f, 0.8f, 0);
+    CHECK(mid > 0 && mid < 1);
+    CHECK_NEAR(clip_out_fraction(true, 0.85f, 1, 0), 0, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 1.0f, 1, 0), 0, 1e-6);
+    // The reload ended early (flag down) with the magazine still out: back in 0.15 s.
+    CHECK_NEAR(clip_out_fraction(false, 0, 0, 0.8f), 0.8, 1e-6);
+    CHECK_NEAR(clip_out_fraction(false, 0, 0.075f, 0.8f), 0.4, 1e-6);
+    CHECK_NEAR(clip_out_fraction(false, 0, 0.2f, 0.8f), 0, 1e-6);
 }
 
 int main() {

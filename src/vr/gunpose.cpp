@@ -54,11 +54,12 @@ static float smooth(float t) {
     return t * t * (3 - 2 * t);
 }
 
-float clip_out_fraction(bool reloading, float p) {
-    if (!reloading) return 0;
-    if (p < 0.2f) return smooth(p / 0.2f);
-    if (p < 0.6f) return 1;
-    return 1 - smooth((p - 0.6f) / 0.25f);
+float clip_out_fraction(bool reloading, float p, float since, float out0) {
+    const float k = smooth(since / 0.15f);
+    if (!reloading) return out0 * (1 - k);
+    float o = out0 + (1 - out0) * k;
+    if (p > 0.6f) o *= 1 - smooth((p - 0.6f) / 0.25f);
+    return o;
 }
 
 }  // namespace hv::vr

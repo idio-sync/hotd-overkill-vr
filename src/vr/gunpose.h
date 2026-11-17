@@ -47,9 +47,11 @@ Ray barrel_ray(const Mat4& gun);
 bool gun_world_matrix(const Mat4& view, float unit_m, const Mat4& hand_lh, const Mat4& gun_in_hand_m, const Mat4& model_to_gun_m,
                       Mat4* out);
 
-// Magazine reload animation: how far out (0 = seated, 1 = fully out) the magazine is at reload
-// progress p (0..1, cWeapon+0x76C) while reloading. It drops out over the first 20%, stays out,
-// and is back in by 85% (so it is seated before the reload ends).
-float clip_out_fraction(bool reloading, float progress);
+// Magazine reload animation: how far out (0 = seated, 1 = fully out) the magazine is.
+// `since_change` = seconds since the reloading flag (cWeapon+0x764) last changed, `out_at_change`
+// = how far out it was then. While reloading it drops out over 0.15 s and, once the reload
+// progress (cWeapon+0x76C, 0..1; it can sit at 0 for a while) passes 0.6, slides back in, seated by
+// 0.85 - before the reload ends. After the flag falls, whatever is still out goes back in 0.15 s.
+float clip_out_fraction(bool reloading, float progress, float since_change, float out_at_change);
 
 }  // namespace hv::vr
