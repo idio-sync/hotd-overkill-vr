@@ -51,6 +51,22 @@ findings-static.md. Everything below was observed in the running game unless mar
   direction overridden killed that zombie (score 0 → 100). The game's own ray cast follows the
   direction the mod supplies. (Origin override not exercised yet.)
 
+## Weapon models (the game's own)
+- The loadout screen's gun is a 2D picture (only 2D draws there). Gameplay draws no gun; the only 3D
+  draws on the HUD target are the ammo rounds (vs 3a5de9a696514b3a, 1036 triangles each, one per round).
+- Asset packs are zlib-compressed (`tools/pc_scan.py` inflates them and lists names). Per level:
+  - `<level>_hud_<weapon>.pc` (9 weapons: pistol_magnum, pistol_gold_magnum, pistol_handcannon,
+    shotgun_12gaugepump, shotgun_auto, mg_machinepistol, mg_assaultrifle, minigun, crossbow) each hold
+    a first-person gun mesh `GunArms_<Weapon>` + magazine `GunArms_<Weapon>_Clip` (gold magnum:
+    `GunArms_Gwendalin`, no clip) + the HUD round `HUD_Bullet_<Weapon>`; textures e.g. handgun_g_t/n/s.
+  - `<level>_hud_arms{w,g,v,c}.pc` = Washington, Agent G, Varla, Candi: `GunArms_<Char>_Mesh` plus
+    per-weapon reload animations (`_Magnum_Reload`, `_ShotGunPump_Reload`, `_Minigun_Overheat`,
+    `_Gwen_Taunt`, ...).
+- Level start opens hud_permasector, the equipped weapon's hud pack (only equipped weapons) and
+  hud_armsw + hud_armsg (players 1/2) — the models are resident during gameplay but never drawn, in
+  reload or otherwise (a cut first-person feature?). The exe has no "GunArms" strings (data-driven);
+  the only related class is `cMeleeArms`. File opens go through MSVCR100 (hooked in files.cpp).
+
 ## Not checked
 - Stereo rendering itself (no per-eye render yet), HUD panel extraction, WiiView edge-pan (camera
   rides the rail during tests; static analysis found the enable byte), culling with a wider FOV,

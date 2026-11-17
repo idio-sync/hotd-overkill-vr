@@ -31,6 +31,7 @@ void install_compile_hooks();  // D3DXCompileShader / D3DXAssembleShader source 
 void install_d3d_hooks();     // Direct3DCreate9 -> device vtable hooks
 void start_audio_mute();
 void install_dinput_hooks();  // DirectInput8: scripted mouse buttons/motion and keys
+void install_file_hooks();    // logs .pc asset opens
 
 // FireBullets detour (gunhook.cpp), installed from the first Present.
 void install_gun_hook();

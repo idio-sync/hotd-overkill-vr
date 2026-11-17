@@ -21,6 +21,7 @@ add_library(hovr_probe SHARED
     src/probe/control.cpp
     src/probe/dinput.cpp
     src/probe/gunhook.cpp
+    src/probe/files.cpp
     src/probe/audio_mute.cpp
     src/probe/png.cpp)
 set_target_properties(hovr_probe PROPERTIES OUTPUT_NAME XINPUT1_3)

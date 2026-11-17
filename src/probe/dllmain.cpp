@@ -12,6 +12,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         hv::install_compile_hooks();
         hv::install_d3d_hooks();
         hv::install_dinput_hooks();
+        hv::install_file_hooks();
         hv::start_audio_mute();
     }
     return TRUE;
