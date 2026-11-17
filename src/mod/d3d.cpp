@@ -214,7 +214,10 @@ static void fix_pp(D3DPRESENT_PARAMETERS* pp) {
         pp->Windowed = TRUE;
         pp->FullScreen_RefreshRateInHz = 0;
     }
-    if (!harness_int(L"vsync", 1, 1)) pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    // The desktop window must never wait for the monitor in VR: SteamVR's pose wait paces the game at
+    // the headset's rate (a windowed vsync'd Present would cap it at the monitor's 60 Hz). A release
+    // install only hooks in VR modes; development keeps probe.ini's vsync key (sim).
+    if (g_vr.mode == VrMode::openvr || !harness_int(L"vsync", 1, 0)) pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 }
 
 // PNG of a render target surface (resolved first if multisampled).

@@ -41,7 +41,9 @@ No screen-space pick, no render readback.
   (0x9C822C/30). Natural per-eye hook (layout guessed).
 - **WiiView edge-pan**: enable byte `[[0x99B8F4]+0x134]`, checked by 0x55F5C0; pan rate 0x4B6DB0,
   summed into manager +0x2C/+0x30 by 0x40D270. Zero it by forcing 0x55F5C0 → 0 or clearing +0x134.
-  Where the sum is applied to the camera: not found.
+  Applied in cCamera's update 0x4DCA50 (0x4DDFD1: manager +0x40/+0x44 added to the camera's angle
+  offsets with the shake 0x4BF210 and smack 0x529CA0 outputs). It is live on PC: milestone 4 forces
+  0x55F5C0 to 0 in VR (findings-probe.md).
 
 ## Frame timing (confirmed)
 - Variable dt: 0x6E7200 writes dt = 1/max(fps, minfps) to 0x9F0B60; game time 0x9F0B50; dt×60 factor
