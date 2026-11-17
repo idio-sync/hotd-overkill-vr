@@ -2,19 +2,22 @@
 
 A VR mod for the **House of the Dead: Overkill** mode inside *The Typing of the Dead: Overkill*
 (Steam app 246580, build 569304). The game is shown in stereo with head tracking through SteamVR;
-its HUD floats on a panel in front of you; menus, the loadout screen, cutscenes, the pause menu and
+the controller is the gun (the game's own weapon model in your hand, shots go along its barrel);
+the HUD floats on a panel in front of you; menus, the loadout screen, cutscenes, the pause menu and
 the death screen appear on a large flat virtual screen. Design: `docs/superpowers/specs/2026-11-17-hotd-overkill-vr-design.md`.
 
-Status: **milestone 3** (the game's own weapon model in your hand: the current weapon's
-first-person mesh follows the controller, switches with the weapon, and its magazine drops out
-and back on reload; shots go along its barrel). Milestones 1-3 have been checked in sim mode only;
-the headset checklists below are for the first headset session.
+Status: **milestone 4** (comfort and release): the game's camera shake, hit jolts, head-bob and
+WiiView edge-pan are off in VR, its own first-person reload animation is hidden, the view
+recentres whenever gameplay resumes, and there is an installer for the Steam copy. Milestones 1-4
+have been checked in sim mode (no headset) only; the playtest checklist below covers all of them
+for the first headset session.
 
 ## How it works (short)
 
 - `XINPUT1_3.dll` is a stand-in XInput DLL the game loads from its own folder. It forwards XInput
-  to Windows and hooks Direct3D 9. Nothing in the game's files is changed; delete the files to
-  uninstall. It only hooks the known build of `HOTD_NG.exe` (others: plain XInput pass-through).
+  to Windows and hooks Direct3D 9. Nothing in the game's files is changed. It only hooks the known
+  build of `HOTD_NG.exe` (others: plain XInput pass-through), and with `mode=off` (or Shift held
+  while the game starts) it hooks nothing at all.
 - Each 3D scene draw is issued twice, once per eye, into double-wide render targets. The game's
   60 Hz frame limiter is lifted during gameplay; SteamVR's pose wait paces the game at the
   headset's rate.
@@ -25,34 +28,67 @@ the headset checklists below are for the first headset session.
   the scene, so the game's own aim logic agrees. The controller's buttons become the game's
   mouse/keyboard input; the real mouse is ignored while the controllers are in use.
 - The gun in your hand is the game's own first-person mesh (`GunArms_<Weapon>`, shipped in the
-  game's hud packs and loaded with every level, but never drawn by the game). The mod finds the
-  resident mesh's GPU buffers and textures through the current weapon and draws them in both eyes,
-  depth-tested against the scene. Shots fly along the drawn barrel, from its muzzle. Nothing is
-  extracted from the game's files.
+  game's hud packs and loaded with every level). The mod finds the resident mesh's GPU buffers and
+  textures through the current weapon and draws them in both eyes, depth-tested against the scene.
+  Shots fly along the drawn barrel, from its muzzle. Nothing is extracted from the game's files.
+- Comfort: the game's camera shake and hit jolts (angle offsets of up to ~30 degrees), its
+  head-bob, and its WiiView edge-pan (the view turns when the cursor reaches the screen edge -
+  which the gun's cursor does whenever it points off-screen) are switched off in VR; the game's
+  own first-person arms-and-gun reload animation (a second gun in front of your face) is not
+  drawn. Each has a setting to bring it back.
 - In VR modes the game's Direct3D 9 device is created as Direct3D 9Ex so the eye images, HUD and
   flat screen can be shared with a Direct3D 11 device that submits them to SteamVR (eyes) and
   shows them as SteamVR overlays (HUD panel, flat screen).
 
-## Build
+## Install (your Steam copy)
 
-`build.cmd` (MSVC Build Tools x86, CMake, `C:\ninja.exe`) → `out\XINPUT1_3.dll` and
-`out\openvr_api.dll`. Unit tests: `ctest --test-dir out` inside a vcvars32 shell.
+You need the zip from `tools\package.ps1`, unzipped (or, from the repo after `build.cmd`, run
+`tools\install_game.ps1` the same way: it takes the DLLs from `out\`).
 
-## Install
+1. Close the game. Find its folder: Steam > Library > right-click *The Typing of the Dead:
+   Overkill* > Manage > Browse local files (the folder with `HOTD_NG.exe`).
+2. In PowerShell, from the unzipped folder:
 
-Copy into the game folder (next to `HOTD_NG.exe`):
+   ```
+   powershell -ExecutionPolicy Bypass -File .\install_game.ps1 -Game "<the game folder>"
+   ```
 
-- `out\XINPUT1_3.dll`
-- `out\openvr_api.dll` (32-bit OpenVR 2.15.6; only loaded in `mode=openvr`)
-- create `hovr\hovr.ini` (the mod makes the `hovr` folder on first start) with the settings below.
+   It checks that `HOTD_NG.exe` is the supported build (and installs nothing if not), refuses to
+   overwrite an `XINPUT1_3.dll` / `openvr_api.dll` that another mod put there, copies the two DLLs,
+   and writes `hovr\hovr.ini` with `mode=openvr` (an existing `hovr.ini` is kept). It does not touch
+   your save.
+3. Play: start SteamVR (controllers on), then the game from Steam as usual. Hold **Shift** while
+   the game starts to play flat for that run; `mode=off` in `hovr\hovr.ini` turns VR off for good.
+   The log is `hovr\hovr.log` (send it with any report).
 
-Development uses a test copy of the game (`C:\Users\Virtual\hotd-vr-game`): `tools\run.ps1
--Mode off|sim|openvr` copies the DLL there and starts it minimized and muted with the save
-redirected to `hovr\AppData` (dev harness settings in `hovr\probe.ini`). For a headset session in
-the test copy, set `minimized=0` and `mute=0` in `hovr\probe.ini` (or start with `-Normal`) so the
-window and sound behave normally. The save redirect stays on in the test copy.
+Uninstall: `install_game.ps1 -Game "<the game folder>" -Uninstall` removes exactly the files it
+installed (checked against the hashes in `hovr\installed.txt`; `XINPUT1_3.dll` also by the mod's
+marker) and keeps `hovr\` (settings and log); add `-Purge` to remove `hovr\` too. Deleting
+`XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` by hand does the same.
 
-Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder.
+**Your save**: the release install plays with the game's own save in
+`%APPDATA%\sega\typing of the dead overkill` (Steam Auto-Cloud keeps syncing it). Nothing in the
+mod writes to it; the game does, as it always does when you play.
+
+## Build, package, development
+
+- `build.cmd` (MSVC Build Tools x86, CMake, `C:\ninja.exe`) -> `out\XINPUT1_3.dll` and
+  `out\openvr_api.dll`. Unit tests: `ctest --test-dir out` inside a vcvars32 shell.
+- `tools\package.ps1 [-NoBuild] [-Version V]` -> `out\dist\hotd-overkill-vr-<version>.zip` (the
+  DLLs, `install_game.ps1`, `hovr.default.ini`, this README, `LICENSES.txt`; no game files).
+- **Development vs release** (`src/vr/harness.h`): a game folder whose `hovr\` holds `probe.ini`
+  (or `hovr.ini` `[vr] dev=1`) runs the development harness: every user folder the game asks for
+  is redirected into `hovr\AppData` etc. (the real save is never touched; the mod exits if the
+  redirect fails), the window is minimized with faked activation and muted, player 1's pad is
+  scripted, `hovr\cmd.txt` is polled for commands, assets/shader compiles are logged, and the log
+  is `hovr\probe.log`. Without it (a release install) none of that happens: the game's own save
+  folder, a normal window, sound on, the real pad, no command file, log `hovr\hovr.log`. The
+  development log's second line (`harness (dry run of a release install)`) says what a release
+  install would do with the same settings.
+- The test copy (`C:\Users\Virtual\hotd-vr-game`) has `hovr\probe.ini`: `tools\run.ps1 -Mode
+  off|sim|openvr` copies the DLL there and starts it minimized and muted with the save redirected
+  (`-Stop` ends that process only). For a headset session in the test copy set `minimized=0` and
+  `mute=0` in `hovr\probe.ini` (or start with `-Normal`); the save redirect stays on there.
 
 ## Settings: `hovr\hovr.ini`, section `[vr]`
 
@@ -89,6 +125,12 @@ Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder.
 | `clip_drop` | `0.2` | how far the magazine drops, metres |
 | `gun_light` | `1.0` | brightness of the gun's lighting |
 | `gun_face_sign` | `1` | `-1` if the gun looks lit from inside (flips which side of its triangles faces out) |
+| `game_arms` | `0` | `1`: the game's own first-person arms and weapon during reloads (Varla and Washington both have them; in VR a second gun in front of your face). `0` hides them |
+| `camera_shake` | `0` | `1`: the game's camera shake and hit jolts (turns of up to ~30 degrees when a zombie hits you) |
+| `head_bob` | `0` | `1`: the game's head-bob while the rail moves (none was seen in the levels checked) |
+| `recentre_resume` | `1` | recentre whenever gameplay resumes after a flat screen (pause, death screen and continue, cutscenes, the next chapter), as at a level start |
+| `keep_active` | `0` | `1`: the game keeps running when its window loses the focus (try it if the game pauses or stops reacting while you are in the headset) |
+| `dev` | `0` | `1`: the development harness (as with `hovr\probe.ini`): save redirected into `hovr\`, command file, minimized and muted window. Not for playing |
 | `show_<weapon>` | see below | `0` hides that weapon's model (aim and everything else still work) |
 | `clip_<weapon>` | see below | magazine: `0` hidden, `1` drops on reload, `2` always drawn, no animation |
 | `hold_<weapon>` | `0,0` | yaw, pitch (degrees) the model is turned in the hand about its grip; the aim turns with the barrel |
@@ -116,10 +158,11 @@ magnum has no magazine.
 
 ## Commands (development)
 
-Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ...`; `tools\step.ps1 NAME 'cmd' ...` adds a
+Development harness only (see above). Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ...`; `tools\step.ps1 NAME 'cmd' ...` adds a
 screenshot). The full list is at the top of `src/mod/control.cpp`. VR ones:
 
-- `vr recentre` — recentre the view (also happens automatically when a level starts).
+- `vr recentre` — recentre the view (also happens automatically when a level starts and when
+  gameplay resumes after a flat screen).
 - `vr state` — log the game state (level / cutscene / paused) and whether the frame is stereo.
 - `vr handoff NAME` — save what the Direct3D 11 side holds: `NAME_eyes.png` + `NAME_hud.png`
   (gameplay) or `NAME_screen.png` (flat), alpha in `_a.png`.
@@ -137,103 +180,98 @@ screenshot). The full list is at the top of `src/mod/control.cpp`. VR ones:
   the aim point), `vr clipout F` (hold the magazine F of the way out; no F = from the reload),
   `vr gunset WEAPON show|clip|grip|barrel|muzzle|clipdir|hold V...` (live tuning).
   `tools/gun_mesh.py PACK.pc --png DIR` measures the meshes in an installed hud pack.
+- Comfort: `vr arms|shake|bob 0|1` (switch `game_arms` / `camera_shake` / `head_bob` live),
+  `vr comfort` (arms draws hidden, largest shake offsets, bob amplitudes, edge-pan state),
+  `vr wiiview 1` (let the game's edge-pan through, to compare), `vr camlog N` (camera position and
+  forward axis for N frames), `vr shakelog 1`, `vr actors 1` (every actor the entity draw sees),
+  `vr waithit [MS]` (the command queue waits until player 1 is hit), `vr measure` (world-scale ray
+  casts: floor, ceiling, walls, zombie heights). `tools\scripts\to_naked_terror_vr.txt` reaches
+  Naked Terror (Varla) at a 1920x1200 back buffer.
 
-## Headset playtest checklist (milestone 1)
+## Headset playtest checklist (milestones 1-4)
 
-Before starting: SteamVR running, headset on, `hovr\hovr.ini` has `mode=openvr`; in the test
-copy `hovr\probe.ini` has `minimized=0` and `mute=0`. Start the game (`tools\run.ps1 -Mode openvr
--Normal`, or `HOTD_NG.exe` directly). If anything goes wrong, hold Shift while starting to play
-flat, and send `hovr\probe.log`.
+One session covers everything. Have the desktop window in view or a second person at the keyboard;
+take notes of the setting values that feel right.
 
-1. **Start-up**: the log (`hovr\probe.log`) shows `vr: OpenVR up, recommended WxH per eye` and the
-   eye tangents; SteamVR shows the game as the running app (not the "loading" grid).
-2. **Main menu**: a large flat screen about 3 m ahead shows the menu, sharp and readable; the
-   eyes are black around it. The mouse still drives the menu (look at the desktop window if
-   needed). Note whether the screen size/distance is comfortable.
-3. **Loadout screen** (Story → Papa's Palace of Pain → Continue/Start): flat and sharp.
-4. **Intro cutscene**: shown on the flat screen (no stereo, no head tracking), subtitles readable.
-   Skipping with Escape works.
-5. **Gameplay** (first kitchen fight): the world is in stereo at a sensible scale (the room
-   should feel life-sized; zombies about human height), head tracking is smooth with no lag or
-   judder at the headset's refresh rate, the rail camera's motion carries you along.
-   - Turn your head left/right up to ~35°: no objects should pop out at the edges.
-   - Look down/up: the view follows; lean in: parallax is correct (near objects move more).
-   - The HUD (health, score, ammo rounds, grenades) floats on a panel ~1.5 m ahead, world-locked
-     (it stays put when you turn your head), readable, and not doubled.
-   - The game's crosshair is **not** shown.
-   - Both eyes line up (no vertical offset, no eye strain); nothing is mirrored or swapped.
-   - Report the SteamVR frame timing (frames dropped/reprojected) and the `fps` lines in the log.
-6. **Pause** (Escape): the pause menu appears on the flat screen; resuming returns to stereo.
-7. **Death screen** (let the zombies win): "Continue?" on the flat screen; clicking Yes returns
-   to stereo gameplay.
-8. **Recentre**: the view recentres when a level starts, and when the gun's stick click is held
-   for a second (milestone 2).
-9. **Quit** from the pause menu: back to the menu on the flat screen; quitting the game leaves
-   SteamVR running normally.
+**Before**: install into the Steam copy (above), or use the test copy with `tools\run.ps1 -Mode
+openvr -Normal` (`minimized=0`, `mute=0` in its `probe.ini`). Start SteamVR with both controllers
+on, then the game. If anything goes wrong, close the game and start it again holding **Shift**
+(flat, no hooks), and keep `hovr\hovr.log` (`hovr\probe.log` in the test copy).
 
-## Headset playtest checklist (milestone 2: the gun)
+1. **Start-up**: the log shows `harness (this run): release; hooks for VR; save the game's own
+   folder ...` (test copy: `development ... redirected`), then `vr: OpenVR up, recommended WxH per
+   eye`, and `vr: gun controller model '...': tip at ...` once the controllers are seen (Steam
+   Frame controllers are expected to report as `oculus_quest2`, tip ~40 degrees below). SteamVR
+   shows the game as the running app.
+2. **Menus on the flat screen** (~3 m ahead, sharp): point the right controller at it - the menu
+   cursor follows exactly; the trigger clicks. Go House of the Dead > Story > a level > Start
+   without the mouse. Screen size/distance comfortable? (`screen_width`, `screen_distance`,
+   `screen_drop`)
+3. **Cutscenes** on the flat screen, subtitles readable; Y/X (pause button) skips.
+4. **Gameplay, stereo and scale** (Papa's Palace kitchen): the room life-sized (camera ~1.6 m above
+   the floor, ceiling ~2.8 m, zombies about human height); head tracking smooth at the headset's
+   rate; leaning gives correct parallax; both eyes line up. Turning the head up to ~35 degrees
+   shows no objects popping out at the edges (`cone_deg`). Report SteamVR's frame timing and the
+   log's `fps` lines (`eye_scale=0.8` if it can't keep up).
+5. **HUD panel**: ~1.5 m ahead, world-locked, readable, not doubled; no game crosshair.
+   (`hud_width`, `hud_distance`, `hud_drop`)
+6. **The gun in hand**: the magnum where the controller is, life-sized, grip in the palm
+   (`gun_grip`, metres, z back, y up; `gun_scale`). Look at it from all sides: anything missing or
+   inside-out? Lighting plausible (`gun_light`, `gun_face_sign=-1`)?
+7. **Aim (the important one)**: with `marker=1` the red dot sits on the barrel's line at any
+   distance, and shots land on it - near and far zombies, gun held off to the side of the head.
+   Without the marker: do shots land where the barrel points? If consistently above/below, tune
+   `hand_pitch` (degrees, + raises the aim) or `hold_<weapon> = 0,PITCH`; left/right offsets are a
+   bug - report them.
+8. **Buttons and haptics**: trigger fires (hold for the SMG), A reloads, B switches weapon (the
+   model changes with the HUD), grip throws a grenade, Y/X pauses; a buzz per shot (`haptics`).
+   Holding the right stick click for a second recentres the view.
+9. **Reload (milestone 4)**: with the magnum and the SMG, the magazine drops out of the grip and
+   slides back (`clip_drop`, `clip_anim`), and **no second pair of arms/gun rises in front of
+   your face**. To compare, set `game_arms=1` once: the game's own arms and gun then appear
+   head-locked during the reload (Washington with the magnum and SMG in Papa's Palace, Varla in
+   Naked Terror).
+10. **Getting hit (milestone 4)**: let a zombie hit you. The view must not jolt or swing (blood on
+    the screen and the HUD's health change are expected). To compare, `camera_shake=1` once: each
+    hit then turns the view by up to ~30 degrees. Nausea either way? Report.
+11. **Screen edges (milestone 4)**: point the gun far off to the side (past the edge of where you
+    look) during a fight: the view must **not** start turning (the game's WiiView edge-pan is off;
+    in sim it turned the camera ~25 degrees in 1.5 s when allowed).
+12. **Recentre (milestone 4)**: turn your body ~45 degrees, pause (Y/X) and resume: gameplay comes
+    back facing where you now look (log: `vr: recentre (gameplay resumed after a flat screen)`).
+    Same after dying and choosing YES (continue), after a cutscene, at the next chapter, and at a
+    level start (`vr: recentre (level start)`). If the snapping is unwelcome, `recentre_resume=0`.
+13. **Moving between rooms**: the rail camera carries you smoothly; no bobbing (`head_bob=1`
+    brings the game's back, none was seen in sim).
+14. **Pause and quit**: the pause menu on the flat screen; Quit goes back to the menus; quitting
+    the game leaves SteamVR running normally.
+15. **Shift at start**: start the game holding Shift: it plays flat on the monitor, the log says
+    `vr: Shift held at start: VR off for this run` and `hooks none`.
+16. **Your save**: progress made in the headset session shows up in the next flat session (the
+    release install uses the game's own save).
 
-Same start-up as above. In SteamVR the controllers must be on before the game starts (or at
-least before the first menu). The log (`hovr\probe.log`) names the gun controller and its model:
-`vr: gun controller model '...': tip at ... pointing N degrees below the raw axis` (Steam Frame
-controllers are expected to report as `oculus_quest2` with the tip about 40 degrees below).
+Report: the log, the setting values you changed (`hand_pitch`, `gun_grip`, panel sizes,
+`eye_scale`), anything that fired when it shouldn't, any weapon that looks broken
+(`show_<weapon>=0`), and whether the comfort defaults (no shake, no edge-pan, no game arms,
+recentre on resume) feel right.
 
-1. **Menus by pointing**: on the main menu, point the right controller at the flat screen: the
-   game's menu cursor follows the controller exactly where it points; pulling the trigger clicks.
-   Go Main menu -> House of the Dead -> Story -> a level -> Start without touching the mouse.
-   The real mouse should no longer move the cursor.
-2. **Aim accuracy (the important one)**: in the first fight, set `marker=1` for this check (or
-   `vr marker 1`). Hold the controller like a gun and point the barrel at a zombie's head. Does the
-   red dot sit where the barrel points? Shoot: do hits land on the dot? Check near and far
-   zombies, and with the controller held off to the side of your head (shots come from the
-   hand, not your eyes, so a zombie half hidden behind a door frame may be hit from one hand
-   position and not another - that is intended). If shots land consistently above or below the
-   barrel's line, change `hand_pitch` (degrees, + raises the aim) in `hovr\hovr.ini` and restart;
-   note the value that feels right. If they land consistently left/right, report it (that would be
-   a bug, not a setting).
-3. **Without the marker**: `marker=0` (the default). Can you aim by the gun alone? (Milestone 3
-   adds the gun model; until then there is nothing drawn at your hand.)
-4. **Buttons**: trigger fires (hold it with an automatic weapon if you have one); A reloads (the
-   HUD's rounds refill); grip throws a grenade (if you have one; it should land where the gun
-   points); B switches weapon (only with two weapons equipped in the loadout);
-   Y/X opens the pause menu, and in the pause menu pointing + trigger works. Holding the right stick
-   click for a second recentres the view.
-5. **Haptics**: a short buzz on every shot, longer for shotguns and the hand cannon. Too strong or
-   weak? (`haptics=0.5` / `2`; `0` turns it off.)
-6. **Death screen**: point at YES and pull the trigger.
-7. Optional: `reload_gesture=1`, then point the gun well away from where you look (e.g. at the
-   floor beside you) and pull the trigger: it reloads instead of firing.
+## Known issues and untested
 
-Report: the tip line from the log, the `hand_pitch` that felt right, whether the marker sat on the
-barrel's line, and anything that fired when it shouldn't (or didn't when it should).
-
-Things to note for the next milestone: whether the HUD panel size/distance/height is right
-(`hud_width`, `hud_distance`, `hud_drop`), whether the flat screen is too big or too close, the
-world scale (`unit_m`), and whether head turns beyond the cone show missing objects.
-
-## Headset playtest checklist (milestone 3: the gun model)
-
-Same start-up as above. The log names the model: `gun model: weapon ... -> GunArms_Magnum (magnum)
-with its magazine`.
-
-1. **The gun in hand**: in the first fight, the magnum is in your right hand where the controller
-   is, life-sized (a real Desert Eagle is ~27 cm long). Does the grip sit in your palm? If it
-   floats ahead/behind/above, adjust `gun_grip` (metres; z back, y up) and note the value. If the
-   whole gun looks too big or small, try `gun_scale`.
-2. **Barrel vs hits (the important one)**: with `marker=1`, the red dot must sit on the line of
-   the barrel, at any distance, and shots must land on it. Then with `marker=0`: do shots land
-   where the barrel points? If the gun feels tilted in the hand (barrel too high/low for a natural
-   wrist), set `hold_magnum = 0,PITCH` (or `hand_pitch`, which tilts gun and aim together) - the
-   aim follows the barrel either way. Report the values that feel right.
-3. **Look at it**: turn the gun around, look at its sides, top, bottom and muzzle. Anything
-   missing, inside-out, or holes? Note which weapon and which side.
-4. **Lighting**: plausible in dark and bright rooms? Too bright/dark -> `gun_light`. If it looks
-   lit from the inside, `gun_face_sign=-1`.
-5. **Switching**: with two weapons in the loadout (the test save has the SMG), B switches and the
-   model changes with the HUD's weapon.
-6. **Reload** (A): the magazine drops out of the grip and slides back before the reload ends.
-   Distance OK (`clip_drop`)? Should it be off (`clip_anim=0`)?
-7. **Other weapons** if you have them: each one's grip and barrel; any that look broken get
-   `show_<weapon>=0`. Report which.
-8. **Occlusion**: pushing the gun into a wall or a zombie hides the part inside it (that is the
-   world's depth, expected).
+- **Nothing has run in a headset yet**: the OpenVR path (submit, overlays, controller poses and
+  buttons, haptics) is compiled and reviewed only; every check above was done in sim mode.
+- Release mode was checked by code review, a unit test of the decision (`test_harness_plan`) and
+  the development log's dry-run line - not by a release run in the test copy, because that would
+  play with the real save.
+- Window focus: in release the game's window is left alone. If the game pauses or ignores the
+  controllers while the desktop window is not in front, set `keep_active=1`.
+- With the game's reload animation hidden (`game_arms=0`) the only reload cue in your hand is the
+  magazine drop; the hand cannon, pump and crossbow have no magazine animation (their "clip"
+  meshes need the arm skeleton).
+- The death screen's red backdrop is the game's own (flat screen); no zoom or blur was seen in
+  stereo frames, so there is no `hit_zoom` setting.
+- No head-bob was seen in this build (the camera kept a constant height over 15 m of rail);
+  `head_bob=0` only holds the game's bob amplitudes at zero as a safety net.
+- Looking more than `cone_deg` away from the rail camera's direction can show objects culled by the
+  game.
+- Only Steam build 569304 of `HOTD_NG.exe` is supported; any other build leaves the mod a plain
+  XInput pass-through (the installer refuses it).

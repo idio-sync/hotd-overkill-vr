@@ -250,3 +250,54 @@ findings-static.md. Everything below was observed in the running game unless mar
   Most likely the arms rig's reload animation (GunArms_Varla_Mesh with its `_Reload` clips; not
   verified which pack). Not seen for the magnum in Papa's Palace. In VR it is a second gun at the
   head during reloads: a candidate to hide in milestone 4 / the hands version.
+
+## Comfort and release (milestone 4, 2026-11-17, sim, 1920x1200 console session)
+- **The reload animation's draws**: logging every entity the engine draws through 0x7697A0 (the
+  entity draw: thiscall, one argument, ret 4; vtable slot 0xA4 of the drawable entity classes,
+  called by the scene list walker 0x523FC0; E+0x48 = actor instance, I+0x8C = ACTR, [ACTR+0x6C] =
+  name) during a reload shows three entities that are otherwise not drawn: a
+  **cPlayerHUDWeaponDisplay** (vtable 0x800BCC, actor "Motion": the arms rig, the two skinned
+  76-byte draws) and the weapon's own **GunArms_SMG / GunArms_SMG_Clip** (static-mesh entities,
+  vtable 0x813768). Correction: the same happens for **Washington** with the magnum and the SMG in
+  Papa's Palace (the earlier "not seen for the magnum" was wrong). Skipping every
+  cPlayerHUDWeaponDisplay and every GunArms_* actor in that draw (`game_arms=0`) removes arms and
+  gun in both cases; zombies and the level are unaffected (scene shots `m4_arms.png`,
+  `m4_washington_off.png` in the test copy's hovr\). A first attempt keyed on cPlayer+0x25C hid a
+  zombie instead: that pointer is the zombie currently attacking player 1, not the arms.
+- **Camera shake / smack**: cCamera's update 0x4DCA50 sums angle offsets (radians, applied with
+  0x6A7570 to the camera's orientation) from 0x4BF210 (shake: spring-damped, two slots of 10
+  dwords at cCameraManager+0xA4 written by the CameraSetShakeSettings handler 0x560690) and
+  0x529CA0 (smack: clamped by cCameraManager+0xF4.., handler 0x437410), plus the WiiView pan
+  (manager +0x40/+0x44). Script handlers are in a table of {name hash, handler, ..., name} entries
+  (e.g. 0x96D2A4 -> "CameraSetShakeSettings"). With a zombie hitting player 1 every ~2 s the shake
+  output reached 0.51 rad (~29 degrees); allowing it live (`vr shake 1`) swung the camera's forward
+  axis from (-0.08, 0.00, 1.00) to (-0.53, 0.16, 0.84) with ~5 degrees of roll. The smack output
+  stayed 0 in everything seen. Zeroed by default (`camera_shake=0`).
+- **WiiView edge-pan is live on PC**: cCameraManager+0x134 = 1 in gameplay and 0x55F5C0 returned 1
+  on every call. With the sim gun pointed 70 degrees right (cursor clamped at the right edge),
+  letting it through (`vr wiiview 1`) turned the camera from forward x -0.08 to 0.35 (~25 degrees)
+  within 1.5 s; blocked (the VR default) the camera stayed put. Shots and the cursor are
+  unaffected by the block.
+- **Head-bob**: the moving bob (cCameraManager +0x8C up, +0x90 sideways, +0x94 wavelength, +0x98
+  minimum speed; defaults 6.5, 7, 250, 10) - with the amplitudes restored the camera moved 1500
+  units along Naked Terror's rail at a constant y (-135.00), so no bob was seen; the static bob
+  values (+0x9C/+0xA0) have no reader. `head_bob=0` holds the amplitudes at 0 anyway.
+- **Hit and death effects in stereo**: hits at health 9..1 and the fatal hit showed only the blood
+  overlays (orthographic, per eye) in the scene target and in the mirror; no full-screen zoom or
+  blur in stereo frames. The death screen (flat) has a red-tinted backdrop. Game FOV changes would
+  be undone by the eye projections in stereo anyway. No `hit_zoom` setting.
+- **World scale** (`vr measure`, the game's ray cast from the camera): Papa's Palace kitchen -
+  floor 158 units below the camera, ceiling 124 above (room 2.82 m at 1 unit = 1 cm), a zombie's
+  hit points up to 1.97 m above the floor (arm raised); Naked Terror basement - floor 165 below,
+  ceiling 131 above (2.96 m), a zombie's top 1.72 m above the floor. So the camera is a ~1.6 m eye
+  height above a floor at y ~78 (kitchen), rooms are ~2.8-3 m high and zombies human-sized:
+  1 unit = 1 cm confirmed, `unit_m=0.01` kept. (The floor is not at y = 0, which settles milestone
+  1's 1.6 vs 2.4 m question.)
+- **Recentre**: logged at the level start (`vr: recentre (level start)`, also after quitting to
+  the level select and starting Papa's Palace) and after each death + continue (`gameplay resumed
+  after a flat screen`, twice). The pause menu has no restart; quitting drops the level flag, so
+  the next start recentres as a level start.
+- **Release vs development**: the development log's second harness line is a dry run of what a
+  release install would do with the same settings ("release; hooks for VR; save the game's own
+  folder; window the game's own; sound on; pad the real one; command file none"). No release run
+  was made in the test copy (it would use the real save).
