@@ -507,9 +507,10 @@ static unsigned __fastcall hk_sphere_b(void* self, void* edx, uint8_t* player) {
 
 // --- input actions (diagnostics) ---
 // 0x426A20 (thiscall input, player*, player index, bool; ret 0xC) turns the input map's action
-// values into player actions: 3 fire (0x511650), 4 0x40DE20 (type-4 pump / +0x790), 5 reload
-// (0x551C20 -> weapon+0x78F; also the motion "shake" gesture via 0x47D190), 0xB next weapon
-// (0x485060 -> 0x4F9A50), 0xC previous weapon (0x4E9C10 -> 0x5564E0). Action value objects:
+// values into player actions: 3 fire (0x511650; left click), 4 grenade (0x40DE20; right click),
+// 5 reload (0x551C20 -> weapon+0x78F; middle click; also the motion "shake" gesture via 0x47D190),
+// 0xB next weapon (0x485060 -> 0x4F9A50; TAB), 0xC previous weapon (0x4E9C10 -> 0x5564E0); 24/25
+// the mouse cursor in client pixels (seen in tests 2026-11-17). Action value objects:
 // [[input + 0x2C + index*4] + 0x6C][action] + 0x2C (int; the bound inputs' sum, clamped to +0x34).
 using Actions_t = void(__fastcall*)(void* input, void* edx, void* player, int index, int flag);
 static Actions_t o_actions;
@@ -554,6 +555,17 @@ void gun_log_state() {
     {
         std::lock_guard lock(g_aim_mx);
         a = g_aim;
+    }
+    // The sphere checks' override for the current hand ray: the cursor whose near-plane point lies
+    // on the ray, and how far the game's ScreenToWorld puts that cursor from it (should be ~0).
+    vr::Ray r;
+    float base[3], du[3], dv[3], x, y, pt[3], t, q[4];
+    if (hand_world_ray(&r) && unproject_basis(base, du, dv) && vr::cursor_on_line(base, du, dv, r.o, r.d, &x, &y, pt, &t) &&
+        seh_unproject(x, y, q)) {
+        const float e = std::sqrt((q[0] - pt[0]) * (q[0] - pt[0]) + (q[1] - pt[1]) * (q[1] - pt[1]) + (q[2] - pt[2]) * (q[2] - pt[2]));
+        logf("vr gun: sphere-check cursor for the hand ray %.1f %.1f, near-plane point %.2f %.2f %.2f (%.1f units behind the hand), "
+             "ScreenToWorld of it off by %.4f units",
+             x, y, pt[0], pt[1], pt[2], -t, e);
     }
     logf("vr gun: aim %s (frame %u, now %u): hand %.1f %.1f %.1f dir %.4f %.4f %.4f -> %s %.1f %.1f %.1f, cursor %s %.1f %.1f",
          a.valid ? "on" : "off", a.frame, g_frame.load(), a.ray.o[0], a.ray.o[1], a.ray.o[2], a.ray.d[0], a.ray.d[1], a.ray.d[2],

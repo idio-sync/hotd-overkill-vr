@@ -140,3 +140,42 @@ findings-static.md. Everything below was observed in the running game unless mar
 - **Pitfall**: `readable()` (VirtualQuery) costs ~0.2 ms in this process (it walks the page table
   of the huge heap regions to size them): calling it per HUD sprite took gameplay to 10 fps. Per
   frame or per draw reads use `safe_copy` (SEH) now.
+
+## The controller gun (milestone 2, 2026-11-17)
+- **Controls** (the game's own Game Settings > Controls screen): left click fire, **middle click
+  reload**, right click grenade, mouse wheel or **TAB** swap weapon, Esc pause; a gamepad layout
+  exists too. (Right click is *not* reload.) Input goes through an input map (data, "Input Map")
+  into per-player action values: dispatcher 0x426A20 (thiscall input, player*, index, flag;
+  ret 0xC) reads `[[input+0x2C+index*4]+0x6C][action]+0x2C`: 3 fire (0x511650), 4 grenade
+  (0x40DE20), 5 reload (0x551C20 -> weapon+0x78F; also a motion "shake" gesture, 0x47D190),
+  0xB next weapon (0x485060 -> 0x4F9A50), 0xC previous weapon (0x4E9C10 -> 0x5564E0), 24/25 the
+  mouse cursor in client pixels. `vr actions 1` logs them; injected middle click -> 5, TAB -> 0xB,
+  right click -> 4 confirmed. The injected mouse wheel did not show up as an action.
+- **Weapon state** (for milestone 3): player 1 `[[0x99B708]+0x24]`; current cWeapon at
+  `player+0x224`; the equipped weapons are a list at `player+0x218` (switching walks it; both
+  set +0x224 and call 0x562BD0, which re-aims the weapon at the cursor and refills the clip if the
+  reload time has passed). cWeapon: +4 weapon data (+0x20 type: 5 = projectile, 4 = grenade-ish;
+  +0x24 kind (magnum: 1; 0xB and 8 are special-cased in the fire logic); +0x1C4 clip size;
+  +0x1D4 reload time; +0x1E0 pellets; +0x204 range), +0x760 rounds in the clip, +0x764 byte =
+  **reloading** (set with +0x765 by StartReload 0x5861F0, which also zeroes +0x760 and stores the
+  reload timing in +0x76C..+0x780), +0x78C/+0x78D trigger pressed/held, +0x78F reload request,
+  +0x794 owner player, +0x7B4 aim direction (vec4). Player health: `player+0x20C` (int, 10 full).
+- **Hits from the hand** (sim, `vr handseek` + `vr btn trigger`): the shot log names what the hand's
+  ray meets (`ray hits a shootable entity ... 1.01 m from the hand`); zombies died from shots
+  whose game direction (through the old cursor) pointed elsewhere (score 0 -> 100 -> 200), also
+  with the hand 60 cm to the right of the head. With `vr aim 0` and the mouse in a corner the same
+  shots went into the ceiling. Pause-menu stats after the test: 9 shots, 55.6% accuracy, 2 kills.
+- **Cursor**: SetCursorX/Y (0x5295F0/0x51FBD0) are called every gameplay frame (input writer and
+  player update), so overriding their argument keeps player 1's cursor on the aim point; the
+  player's per-frame aim (+0x1F0) then points at the same world point. The cursor clamps at the
+  screen edge when the gun points off-screen (shots are unaffected).
+- **ScreenToWorld 0x655620** (cdecl x, y, out vec4) is affine in the cursor; the sphere-check
+  override solves for the cursor whose near-plane point lies on the hand's ray: the game puts it
+  0.003 units off. The sphere checks (0x42B900, 0x479250) did not run in the first kitchen fight.
+- The ray cast 0x5514E0 (cdecl 0, origin vec4*, segment vec4*, 0, result*; result 0x38 bytes made by
+  0x4D6830, hit point at +0; entity via 0x48C8D0, "shootable" = its vtable slot 0x154) is safe to
+  call from the cursor setters (game thread) and costs nothing noticeable once per frame.
+- Slow motion for tests: `[[0x9F09E0]+0x54]` = scale with `+0x58` = 1 scales dt, but the rail
+  camera kept its pace; `vr god 1` was the useful one.
+- Menu back arrows (the "<" buttons) ignore injected clicks (harness and controller alike); Escape
+  (the controller's pause button) goes back.

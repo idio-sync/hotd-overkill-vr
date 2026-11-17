@@ -168,9 +168,20 @@ void input_frame() {
     }
 
     // Trigger -> fire (or the reload gesture).
-    static bool fire_down, gesture_down;
+    // A pull that started in a menu (e.g. on "Resume" or "Yes") doesn't carry over as a shot when
+    // gameplay starts, and a held shot doesn't click in the pause menu: the trigger must be released
+    // after gameplay/menu switches before it acts again.
+    static bool fire_down, gesture_down, was_gameplay, wait_release;
     const bool trig = (gun.buttons & kBtnTrigger) != 0;
-    if (trig && !fire_down && !gesture_down) {
+    if (gameplay != was_gameplay) {
+        was_gameplay = gameplay;
+        if (fire_down) game_input(g_vr.game_fire, false);
+        if (gesture_down) game_input(g_vr.game_reload, false);
+        fire_down = gesture_down = false;
+        wait_release = trig;
+    }
+    if (wait_release && !trig) wait_release = false;
+    if (trig && !fire_down && !gesture_down && !wait_release) {
         if (gameplay && g_vr.reload_gesture && aim_off_view_deg() > g_vr.reload_gesture_deg) {
             gesture_down = true;
             logf("input: reload gesture (aim %.0f deg off the view)", aim_off_view_deg());
