@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include "../src/vr/stereo.h"
+#include "../src/vr/aim.h"
 #include "../src/vr/xform.h"
 
 using namespace hv::vr;
@@ -303,6 +304,146 @@ static void test_panel_projection() {
     CHECK_NEAR(lp.m[2][3], 0, 1e-5);
 }
 
+// --- controller aiming (src/vr/aim.h) ---
+
+static void test_rh_yaw_pitch_forward() {
+    // Yaw right 30 degrees, pitch up 20: forward (-z) turns towards +x and +y.
+    const float y = 30 * kPi / 180, p = 20 * kPi / 180;
+    const Ray r = pose_ray_rh(rh_yaw_pitch(y, p));
+    CHECK_NEAR(r.d[0], std::sin(y) * std::cos(p), 1e-5);
+    CHECK_NEAR(r.d[1], std::sin(p), 1e-5);
+    CHECK_NEAR(r.d[2], -std::cos(y) * std::cos(p), 1e-5);
+    // The same pose in the game camera's space points the same way with z flipped (+z forward).
+    const Ray l = pose_ray_lh(flip_z(rh_yaw_pitch(y, p)));
+    CHECK_NEAR(l.d[0], r.d[0], 1e-5);
+    CHECK_NEAR(l.d[1], r.d[1], 1e-5);
+    CHECK_NEAR(l.d[2], -r.d[2], 1e-5);
+    float yy, pp;
+    yaw_pitch_towards(identity(), r.d, &yy, &pp);
+    CHECK_NEAR(yy, y, 1e-5);
+    CHECK_NEAR(pp, p, 1e-5);
+}
+
+static void test_hand_adjust() {
+    // hand_pitch tilts the aim up in the controller's own frame; hand_offset moves the origin
+    // along the controller's axes (here: 5 cm forward = -z).
+    const float off[3] = {0, 0, -0.05f};
+    const Mat4 ctl = mul(translation(0.3f, 1.0f, -0.4f), ry_rh(kPi / 2));  // controller turned to point at -x
+    const Ray r = pose_ray_rh(mul(ctl, hand_adjust(off, 40)));
+    CHECK_NEAR(r.o[0], 0.3 - 0.05, 1e-5);  // 5 cm along its forward (-x)
+    CHECK_NEAR(r.o[1], 1.0, 1e-5);
+    CHECK_NEAR(r.o[2], -0.4, 1e-5);
+    CHECK_NEAR(r.d[0], -std::cos(40 * kPi / 180), 1e-5);
+    CHECK_NEAR(r.d[1], std::sin(40 * kPi / 180), 1e-5);
+    CHECK_NEAR(r.d[2], 0, 1e-5);
+}
+
+// A game camera at world (100, 200, 300) units, turned 90 degrees right (looking along +x),
+// as the engine's view matrix (world -> view).
+static Mat4 camera_world_turned_right() { return mul(translation(100, 200, 300), rotation_yaw_pitch(kPi / 2, 0)); }
+
+static void test_hand_ray_to_world() {
+    Mat4 view;
+    CHECK(invert(camera_world_turned_right(), &view));
+    // Hand 20 cm right, 30 cm down, 40 cm ahead of the head, pointing straight ahead; head at the
+    // anchor, yaw 0: in the game camera's space the hand is at (0.2, -0.3, 0.4) m pointing +z.
+    const Mat4 anchor = translation(0.5f, 1.2f, 0.1f);
+    const Mat4 hand_rh = mul(anchor, translation(0.2f, -0.3f, -0.4f));
+    const Ray cam = pose_ray_lh(pose_in_game(anchor, hand_rh));
+    CHECK_NEAR(cam.o[0], 0.2, 1e-5);
+    CHECK_NEAR(cam.o[1], -0.3, 1e-5);
+    CHECK_NEAR(cam.o[2], 0.4, 1e-5);
+    CHECK_NEAR(cam.d[2], 1, 1e-5);
+    Ray w;
+    CHECK(camera_ray_to_world(view, cam, 0.01f, &w));
+    // Camera forward = world +x, camera right = world -z (left-handed, yaw 90 right), up = +y.
+    CHECK_NEAR(w.o[0], 100 + 40, 1e-3);
+    CHECK_NEAR(w.o[1], 200 - 30, 1e-3);
+    CHECK_NEAR(w.o[2], 300 - 20, 1e-3);
+    CHECK_NEAR(w.d[0], 1, 1e-5);
+    CHECK_NEAR(w.d[1], 0, 1e-5);
+    CHECK_NEAR(w.d[2], 0, 1e-5);
+    // And back: a world point 5 m along the ray is 5 m ahead of the hand in the camera's space.
+    const float p[3] = {w.o[0] + 500 * w.d[0], w.o[1] + 500 * w.d[1], w.o[2] + 500 * w.d[2]};
+    float c[3];
+    CHECK(world_point_to_camera(view, p, 0.01f, c));
+    CHECK_NEAR(c[0], 0.2, 1e-4);
+    CHECK_NEAR(c[1], -0.3, 1e-4);
+    CHECK_NEAR(c[2], 5.4, 1e-4);
+}
+
+static void test_ray_panel_uv() {
+    // The flat screen 3 m ahead of a turned anchor, 3.2 x 1.8 m.
+    const Mat4 anchor = mul(translation(1, 1.2f, 2), ry_rh(0.7f));
+    const Mat4 panel = panel_pose(anchor, 3.0f, 0.1f);
+    static const float us[] = {0.1f, 0.5f, 0.83f}, vs[] = {0.05f, 0.5f, 0.9f};
+    for (float u : us)
+        for (float v : vs) {
+            float target[3];
+            panel_point(panel, 3.2f, 1.8f, u, v, target);
+            // A hand 25 cm below and right of the anchor, pointing at that point.
+            const Vec4 h = apply(anchor, {0.25f, -0.25f, -0.3f, 1});
+            Ray r{{h.x, h.y, h.z}, {target[0] - h.x, target[1] - h.y, target[2] - h.z}};
+            const float n = std::sqrt(r.d[0] * r.d[0] + r.d[1] * r.d[1] + r.d[2] * r.d[2]);
+            for (float& c : r.d) c /= n;
+            float uu, vv;
+            CHECK(ray_panel_uv(panel, 3.2f, 1.8f, r, &uu, &vv));
+            CHECK_NEAR(uu, u, 1e-4);
+            CHECK_NEAR(vv, v, 1e-4);
+            // Pointing away from the panel never hits it.
+            Ray back = r;
+            for (float& c : back.d) c = -c;
+            CHECK(!ray_panel_uv(panel, 3.2f, 1.8f, back, &uu, &vv));
+        }
+    // Off the panel's edge: u > 1.
+    float target[3];
+    panel_point(panel, 3.2f, 1.8f, 1.4f, 0.5f, target);
+    const Vec4 h = apply(anchor, {0, 0, 0, 1});
+    Ray r{{h.x, h.y, h.z}, {target[0] - h.x, target[1] - h.y, target[2] - h.z}};
+    float uu, vv;
+    CHECK(ray_panel_uv(panel, 3.2f, 1.8f, r, &uu, &vv));
+    CHECK_NEAR(uu, 1.4, 1e-4);
+}
+
+static void test_cursor_on_line() {
+    // A near plane at z = 5 seen from a camera at the origin: cursor (x, y) -> (x/100, y/100, 5)
+    // in some rotated, shifted frame (the game's ScreenToWorld is affine like this).
+    const Mat4 m = mul(translation(10, 20, 30), rotation_yaw_pitch(0.3f, -0.2f));
+    auto pt = [&](float x, float y, float out[3]) {
+        const Vec4 p = apply(m, {x / 100, y / 100, 5, 1});
+        out[0] = p.x, out[1] = p.y, out[2] = p.z;
+    };
+    float base[3], px[3], py[3], du[3], dv[3];
+    pt(0, 0, base), pt(1, 0, px), pt(0, 1, py);
+    for (int i = 0; i < 3; ++i) du[i] = px[i] - base[i], dv[i] = py[i] - base[i];
+    // A line from a hand 30 cm ahead and to the side, through the world point of cursor (120, -45)
+    // at 10 m: the cursor found is (120, -45) scaled to the near plane... i.e. the line's crossing.
+    float target[3];
+    {
+        const Vec4 p = apply(m, {1.2f * 200, -0.45f * 200, 1000, 1});  // on the camera ray of cursor (120, -45), 10 m out
+        target[0] = p.x, target[1] = p.y, target[2] = p.z;
+    }
+    const Vec4 cam = apply(m, {0, 0, 0, 1});
+    const float o[3] = {cam.x, cam.y, cam.z};
+    const float d[3] = {target[0] - o[0], target[1] - o[1], target[2] - o[2]};
+    float x, y, p[3], t;
+    CHECK(cursor_on_line(base, du, dv, o, d, &x, &y, p, &t));
+    CHECK_NEAR(x, 120, 0.05);
+    CHECK_NEAR(y, -45, 0.05);
+    CHECK_NEAR(t, 0.005, 1e-5);  // the near plane is 5 of the 1000 units to the target
+    // A line from elsewhere (a hand off to the side) still lands its crossing on the plane.
+    const Vec4 hand = apply(m, {0.5f, -0.4f, 30, 1});
+    const float o2[3] = {hand.x, hand.y, hand.z};
+    const float d2[3] = {target[0] - o2[0], target[1] - o2[1], target[2] - o2[2]};
+    CHECK(cursor_on_line(base, du, dv, o2, d2, &x, &y, p, &t));
+    float q[3];
+    pt(x, y, q);
+    for (int i = 0; i < 3; ++i) CHECK_NEAR(q[i], p[i], 1e-2);
+    CHECK(t < 0);  // the hand is past the near plane: the crossing is behind it
+    // Parallel to the plane: no answer.
+    CHECK(!cursor_on_line(base, du, dv, o, du, &x, &y, p, &t));
+}
+
 int main() {
     test_flip_z_conversions();
     test_yaw_only_anchor();
@@ -317,10 +458,15 @@ int main() {
     test_tangents_round_trip();
     test_widened_half_angle();
     test_rigid_inverse();
+    test_rh_yaw_pitch_forward();
+    test_hand_adjust();
+    test_hand_ray_to_world();
+    test_ray_panel_uv();
+    test_cursor_on_line();
     if (g_failures) {
         std::printf("%d failure(s)\n", g_failures);
         return 1;
     }
-    std::printf("all stereo and xform tests passed\n");
+    std::printf("all stereo, xform and aim tests passed\n");
     return 0;
 }

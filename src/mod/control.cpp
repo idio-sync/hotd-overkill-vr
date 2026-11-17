@@ -10,7 +10,8 @@
 //   trig LT RT [MS]         triggers 0..255
 //   cursor X Y | cursor off fake cursor in window client pixels
 //   move DX DY              relative DInput mouse motion
-//   click [left|right] [MS] mouse button press
+//   wheel DZ                DInput mouse wheel (120 = one notch up, -120 down)
+//   click [left|right|middle] [MS]  mouse button press
 //   key NAME [MS]           key press (RETURN, ESCAPE, SPACE, UP..., F1..., A-Z, 0-9, or 0xNN)
 //   type TEXT               one key press per character
 //   shot [NAME]             back buffer PNG (hovr\NAME.png, default shot_N)
@@ -37,6 +38,21 @@
 //   vr recentre             recentre the head (yaw-only anchor at the current head pose)
 //   vr state                log the game state (level, cutscene, paused) and the frame mode
 //   vr crosshair 0|1        hide/show the game's crosshair in stereo gameplay
+//   vr hand YAW PITCH       sim gun hand direction relative to the head, degrees (+ right / + up)
+//   vr handpos X Y Z        sim gun hand position relative to the head, metres (x right, y up, z back)
+//   vr handat X Y           sim: point the hand at what the game camera sees through cursor X, Y
+//                           (the game's cursor space: composite pixels from the centre, +y up)
+//   vr handscreen X Y       sim: point the hand at back-buffer pixel X, Y of the flat screen
+//   vr hand off             sim: the hand stops driving the menu cursor (`vr hand*` turns it on)
+//   vr btn NAME [MS]        sim controller button press (trigger, a, b, grip, stick; off.NAME for
+//                           the other hand), default 120 ms, then wait 200 ms
+//   vr hold NAME | vr release NAME|all   hold / release sim controller buttons
+//   vr marker 0|1           hit marker in the eyes
+//   vr aim 0|1              controller aim on/off (0: the mouse aims)
+//   vr gesture 0|1          reload gesture on/off
+//   vr gun                  log player 1's weapon, ammo and the controller aim
+//   vr god 0|1              dev: keep player 1's health full (player+0x20C)
+//   vr actions 0|1          dev: log the game's input action values (fire 3, reload 5, weapon 0xB/0xC)
 //   vr                      log the current VR settings
 #include "common.h"
 
@@ -82,7 +98,7 @@ static WORD parse_buttons(const std::string& s) {
     return out;
 }
 
-static UINT parse_key(const std::string& s) {
+UINT key_from_name(const std::string& s) {
     static const struct { const char* n; UINT vk; } names[] = {
         {"RETURN", VK_RETURN}, {"ENTER", VK_RETURN}, {"ESCAPE", VK_ESCAPE}, {"ESC", VK_ESCAPE}, {"SPACE", VK_SPACE},
         {"TAB", VK_TAB}, {"BACK", VK_BACK}, {"UP", VK_UP}, {"DOWN", VK_DOWN}, {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT},
@@ -100,7 +116,11 @@ static UINT parse_key(const std::string& s) {
 // or [ADDR]+0xOFF (dereference, then add).
 static uintptr_t parse_addr(const std::string& s) {
     if (!s.empty() && s[0] == '[') {
-        size_t close = s.find(']');
+        size_t close = 0;  // the matching bracket (they nest: [[va:0x99B708]+0x24]+0x224)
+        for (int depth = 0; close < s.size(); ++close) {
+            if (s[close] == '[') ++depth;
+            else if (s[close] == ']' && --depth == 0) break;
+        }
         uintptr_t inner = parse_addr(s.substr(1, close - 1));
         if (!readable(inner)) return 0;
         uintptr_t p = *reinterpret_cast<const uintptr_t*>(inner);
@@ -154,7 +174,8 @@ FrameRequests control_tick() {
         std::stringstream ss(line);
         std::string cmd;
         ss >> cmd;
-        if (cmd != "wait" && cmd != "_release" && cmd != "_stick0" && cmd != "_rstick0" && cmd != "_trig0" && cmd != "_keyup" && cmd != "_clickup")
+        if (cmd != "wait" && cmd != "_release" && cmd != "_stick0" && cmd != "_rstick0" && cmd != "_trig0" && cmd != "_keyup" && cmd != "_clickup" &&
+            cmd != "_vrbtnup")
             logf("cmd: %s", line.c_str());
         if (cmd == "wait") {
             int ms = 0;
@@ -211,22 +232,31 @@ FrameRequests control_tick() {
             LONG dx = 0, dy = 0;
             ss >> dx >> dy;
             di_mouse_move(dx, dy);
+        } else if (cmd == "wheel") {
+            LONG dz = 0;
+            ss >> dz;
+            di_mouse_wheel(dz);
         } else if (cmd == "click") {
             std::string which = "left";
             int ms = 80;
             ss >> which >> ms;
-            bool right = which == "right";
-            post_mouse_button(right, true);
-            push_front({"wait " + std::to_string(ms), std::string("_clickup ") + (right ? "right" : "left")});
+            if (which == "middle") di_mouse_button(2, true);
+            else post_mouse_button(which == "right", true);
+            push_front({"wait " + std::to_string(ms), "_clickup " + which});
         } else if (cmd == "_clickup") {
             std::string which;
             ss >> which;
-            post_mouse_button(which == "right", false);
+            if (which == "middle") di_mouse_button(2, false);
+            else post_mouse_button(which == "right", false);
+        } else if (cmd == "_vrbtnup") {
+            std::string name;
+            ss >> name;
+            input_sim_button(name, false);
         } else if (cmd == "key") {
             std::string k;
             int ms = 80;
             ss >> k >> ms;
-            UINT vk = parse_key(k);
+            UINT vk = key_from_name(k);
             if (vk) {
                 post_key(vk, true);
                 push_front({"wait " + std::to_string(ms), "_keyup " + std::to_string(vk), "wait 60"});
@@ -279,6 +309,42 @@ FrameRequests control_tick() {
                 g_dbg = atoi(a.c_str());
             } else if (what == "crosshair") {
                 g_vr.crosshair = v != 0;
+            } else if (what == "hand" || what == "handpos" || what == "handat" || what == "handscreen") {
+                std::string b, c;
+                ss >> b >> c;
+                const float y = strtof(b.c_str(), nullptr), z = strtof(c.c_str(), nullptr);
+                if (what == "hand" && a == "off") {
+                    input_sim_pointer(false);
+                } else {
+                    input_sim_pointer(true);
+                    if (what == "hand") g_vr.sim_hand_yaw = v, g_vr.sim_hand_pitch = y;
+                    else if (what == "handpos") g_vr.sim_hand[0] = v, g_vr.sim_hand[1] = y, g_vr.sim_hand[2] = z;
+                    else if (what == "handat") gun_request_handat(v, y);
+                    else input_aim_at_screen(v, y);
+                }
+                logf("vr hand: at %.3f %.3f %.3f m, yaw %.2f pitch %.2f deg (relative to the head)", g_vr.sim_hand[0], g_vr.sim_hand[1],
+                     g_vr.sim_hand[2], g_vr.sim_hand_yaw, g_vr.sim_hand_pitch);
+            } else if (what == "btn") {
+                int ms = 120;
+                ss >> ms;
+                input_sim_button(a, true);
+                push_front({"wait " + std::to_string(ms), "_vrbtnup " + a, "wait 200"});
+            } else if (what == "hold") {
+                input_sim_button(a, true);
+            } else if (what == "release") {
+                input_sim_button(a.empty() ? "all" : a, false);
+            } else if (what == "marker") {
+                g_vr.marker = v != 0;
+            } else if (what == "aim") {
+                g_vr.aim = v != 0;
+            } else if (what == "gesture") {
+                g_vr.reload_gesture = v != 0;
+            } else if (what == "actions") {
+                gun_log_actions(v != 0);
+            } else if (what == "god") {
+                gun_set_god(v != 0);
+            } else if (what == "gun") {
+                gun_log_state();
             } else if (what == "state") {
                 GameState st = game_state();
                 logf("vr state: level %d cutscene %d paused %d gameplay %d; this frame %s", int(st.level), int(st.cutscene),
@@ -286,8 +352,9 @@ FrameRequests control_tick() {
             } else if (!what.empty()) {
                 logf("unknown vr command: %s", line.c_str());
             }
-            logf("vr: mode=%s stereo=%d yaw=%.1f pitch=%.1f ipd_m=%.4f unit_m=%.4f cone_deg=%.1f crosshair=%d", mode_name(g_vr.mode),
-                 int(g_vr.stereo), g_vr.sim_yaw_deg, g_vr.sim_pitch_deg, g_vr.ipd_m, g_vr.unit_m, g_vr.cone_deg, int(g_vr.crosshair));
+            logf("vr: mode=%s stereo=%d yaw=%.1f pitch=%.1f ipd_m=%.4f unit_m=%.4f cone_deg=%.1f crosshair=%d aim=%d marker=%d gesture=%d",
+                 mode_name(g_vr.mode), int(g_vr.stereo), g_vr.sim_yaw_deg, g_vr.sim_pitch_deg, g_vr.ipd_m, g_vr.unit_m, g_vr.cone_deg,
+                 int(g_vr.crosshair), int(g_vr.aim), int(g_vr.marker), int(g_vr.reload_gesture));
         } else if (cmd == "peek") {
             std::string a;
             int n = 4;

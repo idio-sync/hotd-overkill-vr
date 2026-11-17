@@ -7,6 +7,8 @@
 // hooks (raw_*), with the game's state saved in a state block and restored after.
 #include "common.h"
 
+#include <cmath>
+
 #include "../vr/xform.h"
 
 namespace hv {
@@ -120,6 +122,56 @@ void mirror_stereo(IDirect3DDevice9* dev, IDirect3DTexture9* eyes, IDirect3DText
     }
     raw_set_texture(dev, 0, nullptr);
     end(dev, &s, bb);
+}
+
+// Small filled squares-ish dots (8-sided) drawn over `target` at pixel centres xy; the game's
+// state is saved and restored as for the mirror.
+void draw_dots(IDirect3DDevice9* dev, IDirect3DSurface9* target, const float (*xy)[2], int n, float radius, D3DCOLOR colour) {
+    if (!target || n <= 0) return;
+    if (!g_sb && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &g_sb))) return;
+    D3DSURFACE_DESC d{};
+    target->GetDesc(&d);
+    g_sb->Capture();
+    IDirect3DSurface9 *rt = nullptr, *ds = nullptr;
+    dev->GetRenderTarget(0, &rt);
+    dev->GetDepthStencilSurface(&ds);
+    raw_set_rt(dev, 0, target);
+    raw_set_depth(dev, nullptr);
+    D3DVIEWPORT9 vp = {0, 0, d.Width, d.Height, 0, 1};
+    raw_set_viewport(dev, &vp);
+    raw_set_vs(dev, nullptr);
+    raw_set_ps(dev, nullptr);
+    raw_set_texture(dev, 0, nullptr);
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    const struct { D3DRENDERSTATETYPE s; DWORD v; } rs[] = {
+        {D3DRS_ZENABLE, FALSE}, {D3DRS_ZWRITEENABLE, FALSE}, {D3DRS_ALPHABLENDENABLE, FALSE}, {D3DRS_ALPHATESTENABLE, FALSE},
+        {D3DRS_CULLMODE, D3DCULL_NONE}, {D3DRS_SCISSORTESTENABLE, FALSE}, {D3DRS_STENCILENABLE, FALSE},
+        {D3DRS_COLORWRITEENABLE, 0xF}, {D3DRS_SRGBWRITEENABLE, FALSE}, {D3DRS_FOGENABLE, FALSE}, {D3DRS_LIGHTING, FALSE},
+        {D3DRS_SEPARATEALPHABLENDENABLE, FALSE}, {D3DRS_FILLMODE, D3DFILL_SOLID}};
+    for (auto& r : rs) raw_set_rs(dev, r.s, r.v);
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    struct CV {
+        float x, y, z, rhw;
+        D3DCOLOR c;
+    };
+    for (int i = 0; i < n; ++i) {
+        CV fan[10];
+        fan[0] = {xy[i][0] - .5f, xy[i][1] - .5f, .5f, 1, colour};
+        for (int k = 0; k <= 8; ++k) {
+            const float a = k * 3.14159265f / 4;
+            fan[k + 1] = {xy[i][0] + radius * std::cos(a) - .5f, xy[i][1] + radius * std::sin(a) - .5f, .5f, 1, colour};
+        }
+        raw_dpup(dev, D3DPT_TRIANGLEFAN, 8, fan, sizeof(CV));
+    }
+    raw_set_rt(dev, 0, rt);
+    raw_set_depth(dev, ds);
+    g_sb->Apply();
+    if (rt) rt->Release();
+    if (ds) ds->Release();
 }
 
 void mirror_flat(IDirect3DDevice9* dev, IDirect3DTexture9* screen) {

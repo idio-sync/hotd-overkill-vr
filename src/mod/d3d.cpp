@@ -282,7 +282,8 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
         g_frame = nullptr;
         logf("frame log written (frame %d)", g_frame_no);
     }
-    if (ini_int(L"gun_hook", 1)) install_gun_hook();  // once; after SecuROM's start-up patching
+    if (ini_int(L"gun_hook", 1)) install_gun_hooks();  // once; after SecuROM's start-up patching
+    gun_frame();
     FrameRequests req = control_tick();
     stereo_present(dev, req);  // VR: hand-off, desktop mirror, submit
     if (req.shot) save_backbuffer(dev, req.shot_name);  // the back buffer still holds this frame
@@ -305,7 +306,10 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
 
     HRESULT hr = o_Present(dev, a, b, w, r);
     if (hr == S_PRESENT_OCCLUDED || hr == S_PRESENT_MODE_CHANGED) hr = D3D_OK;  // 9Ex success codes the game doesn't know
-    if (g_vr.mode != VrMode::off) vrsys_wait_poses();
+    if (g_vr.mode != VrMode::off) {
+        vrsys_wait_poses();
+        input_frame();
+    }
     static HRESULT last_hr = S_OK;
     if (hr != last_hr) {
         logf("Present -> %08lx (frame %d, %d draws)", hr, g_frame_no, g_draws);

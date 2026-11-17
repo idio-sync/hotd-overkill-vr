@@ -22,6 +22,26 @@
 //   mirror    = 1                    desktop window shows the VR view (0: the game's own frame)
 //   handoff   = 1                    sim: also run the D3D9Ex -> D3D11 hand-off (openvr: always)
 //   handoff_sync = 1                 wait for the D3D9 frame on the GPU before D3D11 reads it
+//
+//   Gun and input (vrinput.cpp, gun.cpp):
+//   aim       = 1                    the controller aims the game's shots (0: the mouse aims)
+//   hand      = right | left         the controller that is the gun
+//   hand_pitch = 0                   degrees the aim is tilted up from the controller's pointing axis
+//                                    (its render model's tip when SteamVR reports one)
+//   hand_offset = 0,0,0              aim origin in the controller's frame, metres (x right, y up, z back)
+//   haptics   = 1.0                  shot pulse strength (0: off; shotguns and the hand cannon pulse harder)
+//   marker    = 0                    1: a small dot in the eyes where the shot will land
+//   reload_gesture = 0               1: pulling the trigger while pointing more than reload_gesture_deg
+//   reload_gesture_deg = 60          (degrees) away from where you look reloads, like a light gun off-screen
+//   btn_reload = gun.a,gun.grip      controller buttons for the game's actions: gun. (the gun hand) or
+//   btn_switch = gun.b               off. (the other hand) + a | b | grip | stick | trigger; a = A/X,
+//   btn_pause  = off.b,off.a         b = B/Y (SteamVR's application-menu button); comma = either
+//   btn_recentre = gun.stick         held for a second: recentre the view
+//   game_fire = lmb, game_reload = rmb, game_switch = wheeldown, game_pause = ESCAPE
+//                                    what each action sends to the game (lmb, rmb, mmb, wheelup,
+//                                    wheeldown, or a key name: RETURN, SPACE, A-Z, 0-9, F1..., 0xNN)
+//   sim_hand  = 0.15,-0.25,-0.35     sim hand position relative to the head, metres (x right, y up, z back)
+//   sim_hand_yaw = 0, sim_hand_pitch = 0   sim hand direction relative to the head, degrees
 #include "common.h"
 
 #include <cwchar>
@@ -36,6 +56,22 @@ static std::wstring ini_str(const wchar_t* key, const wchar_t* def) {
     wchar_t buf[128];
     GetPrivateProfileStringW(L"vr", key, def, buf, 128, ini_path().c_str());
     return buf;
+}
+
+static void ini_vec3(const wchar_t* key, float v[3]) {
+    std::wstring s = ini_str(key, L"");
+    float t[3];
+    if (!s.empty() && swscanf(s.c_str(), L"%f,%f,%f", &t[0], &t[1], &t[2]) == 3)
+        for (int i = 0; i < 3; ++i) v[i] = t[i];
+}
+
+static std::string ini_ascii(const wchar_t* key, const std::string& def) {
+    std::wstring w(def.begin(), def.end());
+    w = ini_str(key, w.c_str());
+    std::string out;
+    for (wchar_t c : w)
+        if (c != L' ') out += char(c);
+    return out;
 }
 
 static float ini_float(const wchar_t* key, float def) {
@@ -94,6 +130,25 @@ void load_vr_config() {
     c.mirror = ini_float(L"mirror", 1) != 0;
     c.handoff = ini_float(L"handoff", 1) != 0;
     c.handoff_sync = ini_float(L"handoff_sync", 1) != 0;
+    c.aim = ini_float(L"aim", 1) != 0;
+    c.left_hand = _wcsicmp(ini_str(L"hand", L"right").c_str(), L"left") == 0;
+    c.hand_pitch = ini_float(L"hand_pitch", c.hand_pitch);
+    ini_vec3(L"hand_offset", c.hand_offset);
+    c.haptics = ini_float(L"haptics", c.haptics);
+    c.marker = ini_float(L"marker", 0) != 0;
+    c.reload_gesture = ini_float(L"reload_gesture", 0) != 0;
+    c.reload_gesture_deg = ini_float(L"reload_gesture_deg", c.reload_gesture_deg);
+    ini_vec3(L"sim_hand", c.sim_hand);
+    c.sim_hand_yaw = ini_float(L"sim_hand_yaw", 0);
+    c.sim_hand_pitch = ini_float(L"sim_hand_pitch", 0);
+    c.btn_reload = ini_ascii(L"btn_reload", c.btn_reload);
+    c.btn_switch = ini_ascii(L"btn_switch", c.btn_switch);
+    c.btn_pause = ini_ascii(L"btn_pause", c.btn_pause);
+    c.btn_recentre = ini_ascii(L"btn_recentre", c.btn_recentre);
+    c.game_fire = ini_ascii(L"game_fire", c.game_fire);
+    c.game_reload = ini_ascii(L"game_reload", c.game_reload);
+    c.game_switch = ini_ascii(L"game_switch", c.game_switch);
+    c.game_pause = ini_ascii(L"game_pause", c.game_pause);
     c.stereo = c.mode != VrMode::off;
     g_vr = c;
     logf("vr: mode=%s ipd_m=%.4f unit_m=%.4f sim_yaw=%.1f sim_pitch=%.1f cone_deg=%.1f eye_res=%s%dx%d uncap=%d crosshair=%d",
@@ -101,6 +156,12 @@ void load_vr_config() {
          c.eye_h, int(c.uncap), int(c.crosshair));
     logf("vr: hud %.2f m wide at %.2f m (drop %.2f), screen %.2f m wide at %.2f m, mirror=%d handoff=%d handoff_sync=%d",
          c.hud_width, c.hud_distance, c.hud_drop, c.screen_width, c.screen_distance, int(c.mirror), int(c.handoff), int(c.handoff_sync));
+    logf("vr: aim=%d hand=%s hand_pitch=%.1f hand_offset=%.3f,%.3f,%.3f haptics=%.2f marker=%d reload_gesture=%d (%.0f deg)", int(c.aim),
+         c.left_hand ? "left" : "right", c.hand_pitch, c.hand_offset[0], c.hand_offset[1], c.hand_offset[2], c.haptics, int(c.marker),
+         int(c.reload_gesture), c.reload_gesture_deg);
+    logf("vr: buttons reload=%s switch=%s pause=%s recentre=%s; game fire=%s reload=%s switch=%s pause=%s", c.btn_reload.c_str(),
+         c.btn_switch.c_str(), c.btn_pause.c_str(), c.btn_recentre.c_str(), c.game_fire.c_str(), c.game_reload.c_str(),
+         c.game_switch.c_str(), c.game_pause.c_str());
 }
 
 }  // namespace hv

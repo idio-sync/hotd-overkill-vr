@@ -99,6 +99,8 @@ static bool g_bb_drawn;
 static RECT g_bb_comp_rect;  // where the game drew the composite target into the back buffer
 static bool g_bb_comp;
 static ID3D11Texture2D* g_own11[3];  // D3D11 copies: eyes, hud, screen
+static RECT g_flat_rect;  // the back-buffer area the flat screen showed last
+static bool g_flat_rect_ok;
 
 // Per-frame stats.
 static int g_stereo_draws, g_scene_mono_draws, g_overlay_draws, g_last_stereo, g_last_mono, g_last_overlay;
@@ -637,7 +639,39 @@ static bool copy_flat(IDirect3DDevice9* dev) {
     }
     if (ok) ok = SUCCEEDED(raw_stretch(dev, src, &r, g_screen.surf, nullptr, D3DTEXF_NONE));
     bb->Release();
+    if (ok) g_flat_rect = r, g_flat_rect_ok = true;
     return ok;
+}
+
+bool stereo_flat_rect(RECT* r) {
+    *r = g_flat_rect;
+    return g_flat_rect_ok;
+}
+
+// A world point as an eye-texture pixel (both eyes side by side in g_eyetex), through the eye's
+// projection and the frame's game view: what the headset shows there.
+bool stereo_world_to_eye(const float p[3], int eye, float* x, float* y) {
+    if (!g_eyes.valid || !g_eyetex.w) return false;
+    const vr::Mat4 m = vr::mul(g_eyes.c[eye], vr::mul(g_eyes.p_game, g_eyes.view));
+    const vr::Vec4 c = vr::apply(m, {p[0], p[1], p[2], 1});
+    if (c.w <= 1e-3f) return false;
+    const float half = float(g_eyetex.w) / 2;
+    *x = eye * half + (c.x / c.w + 1) * 0.5f * half;
+    *y = (1 - c.y / c.w) * 0.5f * float(g_eyetex.h);
+    return *x >= eye * half && *x < (eye + 1) * half && *y >= 0 && *y < float(g_eyetex.h);
+}
+
+// [vr] marker: a small dot in each eye where the shot will land (the aim point).
+static void draw_marker(IDirect3DDevice9* dev) {
+    float p[3];
+    bool hit;
+    if (!g_vr.marker || !gun_aim_point(p, &hit)) return;
+    float xy[2][2];
+    int n = 0;
+    for (int eye = 0; eye < 2; ++eye)
+        if (stereo_world_to_eye(p, eye, &xy[n][0], &xy[n][1])) ++n;
+    const float r = (std::max)(2.f, 3.f * float(g_eyetex.h) / 807.f);
+    if (n) draw_dots(dev, g_eyetex.surf, xy, n, r, hit ? D3DCOLOR_XRGB(255, 40, 40) : D3DCOLOR_XRGB(255, 200, 40));
 }
 
 // Time spent in stereo_present per frame (status line), and `vr dbg BITS` switches for bisecting
@@ -669,6 +703,7 @@ void stereo_present(IDirect3DDevice9* dev, const FrameRequests& req) {
     const bool stereo = g_frame_stereo && g_hud_drawn;
     const bool flat = !stereo && copy_flat(dev);
     if (stereo) raw_stretch(dev, g_hudrt.surf, nullptr, g_hud.surf, nullptr, D3DTEXF_NONE);
+    if (stereo) draw_marker(dev);
     if (g_vr.mirror && !(g_dbg & 1)) {
         if (stereo) mirror_stereo(dev, g_eyetex.tex, g_hudrt.tex);
         else if (flat) mirror_flat(dev, g_screen.tex);

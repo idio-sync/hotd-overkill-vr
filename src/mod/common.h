@@ -58,6 +58,21 @@ struct VrConfig {
     bool mirror = true;         // desktop window shows the VR view
     bool handoff = true;        // sim: run the D3D9Ex -> D3D11 hand-off too
     bool handoff_sync = true;   // wait for the D3D9 GPU work before D3D11 reads it
+    // Gun and input (milestone 2).
+    bool aim = true;            // the controller aims the game's shots (0: the mouse, as in milestone 1)
+    bool left_hand = false;     // hand = left: the gun is the left controller
+    float hand_pitch = 0;       // degrees the aim is tilted up from the controller's pointing axis
+    float hand_offset[3] = {};  // aim origin in the controller's frame, metres (x right, y up, z back)
+    float haptics = 1.0f;       // shot pulse strength scale (0: off)
+    bool marker = false;        // a small dot in the eyes where the shot will land
+    bool reload_gesture = false;  // point well away from the view and pull the trigger = reload
+    float reload_gesture_deg = 60;
+    float sim_hand[3] = {0.15f, -0.25f, -0.35f};  // sim hand position relative to the head, metres (RH)
+    float sim_hand_yaw = 0, sim_hand_pitch = 0;    // sim hand direction relative to the head, degrees
+    // Controller buttons ("gun.a", "off.b", ...; comma-separated alternatives) and the game input
+    // each one sends ("lmb", "rmb", "mmb", "wheelup", "wheeldown", or a key name).
+    std::string btn_reload = "gun.a,gun.grip", btn_switch = "gun.b", btn_pause = "off.b,off.a", btn_recentre = "gun.stick";
+    std::string game_fire = "lmb", game_reload = "rmb", game_switch = "wheeldown", game_pause = "ESCAPE";
 };
 extern VrConfig g_vr;
 void load_vr_config();
@@ -71,16 +86,43 @@ void start_audio_mute();
 void install_dinput_hooks();  // DirectInput8: scripted mouse buttons/motion and keys
 void install_file_hooks();    // logs .pc asset opens
 
-// FireBullets detour (gunhook.cpp), installed from the first Present.
-void install_gun_hook();
-void gun_set_dir(bool on, float x, float y, float z);
-void gun_set_origin(bool on, float x, float y, float z);
+// The controller gun (gun.cpp): detours on the game's shot paths and cursor setters, installed
+// from the first Present (after SecuROM's start-up patching).
+void install_gun_hooks();
+void gun_frame();  // once per Present: a new game frame for the aim
+void gun_set_dir(bool on, float x, float y, float z);   // dev: `aimdir`
+void gun_set_origin(bool on, float x, float y, float z);  // dev: `aimorigin`
 void gun_capture_next();
+// The last aim point (world, game units) and whether the ray hit the scene; false: no aim.
+bool gun_aim_point(float out[3], bool* hit);
+void gun_request_handat(float cursor_x, float cursor_y);  // sim: aim the hand at what the camera sees at a cursor
+void gun_log_state();      // `vr gun`: weapon, ammo, aim
+bool gun_aim_active();     // the controller drives player 1's aim now
+void gun_log_actions(bool on);  // dev: log the game's input action values as they change
+void gun_set_god(bool on);  // dev: keep player 1's health full (tests that need time in gameplay)
+
+// Controller input (vrinput.cpp): buttons -> the game's DirectInput, menu pointing, haptics.
+enum CtlButton : uint32_t { kBtnTrigger = 1, kBtnA = 2, kBtnB = 4, kBtnGrip = 8, kBtnStick = 16 };
+struct CtlState {
+    bool present = false;
+    uint32_t buttons = 0;  // CtlButton bits (kBtnTrigger: the trigger past half travel)
+    float trigger = 0;     // 0..1
+};
+void input_frame();             // once per Present, after the poses were read
+bool input_owns_pointer();      // the controllers replace the real mouse (VR modes, a controller seen)
+void input_shot(float strength);  // a player-1 shot: haptic pulse (1 = normal, 2 = strong)
+void input_sim_button(const std::string& name, bool down);  // sim controller: "trigger", "a", "off.b", ...
+void input_sim_pointer(bool on);  // sim: the scripted hand drives the menu cursor (`vr hand*` turns it on)
+void input_aim_at_screen(float x, float y);  // sim: point the hand at back-buffer pixel x, y of the flat screen
+void vrsys_sim_buttons(bool gun_hand, uint32_t buttons, float trigger);
+void game_input(const std::string& token, bool down);  // "lmb", "rmb", "wheelup", key names
+UINT key_from_name(const std::string& s);  // control.cpp
 
 // Scripted DInput state (dinput.cpp).
 void di_key(UINT vk, bool down);
 void di_mouse_button(int button, bool down);
 void di_mouse_move(LONG dx, LONG dy);
+void di_mouse_wheel(LONG dz);
 
 // Shaders (shaders.cpp): bytecode -> hash, CTAB constant names, disassembly dump.
 struct ShaderConst {
@@ -107,6 +149,7 @@ void note_compiled(const void* code, size_t size, uint64_t source_hash);  // com
 // Window (window.cpp).
 HWND game_window();
 void set_fake_cursor(int x, int y);  // client coordinates; x < 0 = real cursor
+bool get_fake_cursor(int* x, int* y);
 void post_mouse_button(bool right, bool down);
 void post_key(UINT vk, bool down);
 
@@ -164,6 +207,8 @@ void stereo_eye_half_angles(float game_hx, float game_hy, float* hx, float* hy);
 void stereo_present(IDirect3DDevice9* dev, const FrameRequests& req);  // at Present: hand-off, mirror, submit
 void stereo_frame_end();       // Present: per-frame stats, next frame's mode
 void stereo_reset();           // device Reset: drop our D3D9 resources
+bool stereo_flat_rect(RECT* r);  // the back-buffer area shown on the flat screen (last flat frame)
+bool stereo_world_to_eye(const float p[3], int eye, float* x, float* y);  // eye-texture pixel of a world point (stereo frames)
 int stereo_draws_this_frame();  // perspective scene draws drawn per eye so far this frame
 void stereo_request_check();   // `vr check` for the next frame
 const char* stereo_status();   // for the status line
@@ -240,12 +285,19 @@ void vrsys_wait_poses();    // after Present: the next frame's head pose
 vr::Mat4 vrsys_eye_in_anchor(int eye);  // right-handed, metres
 bool vrsys_eye(int eye, vr::Mat4* pose_lh, float tan[4]);  // false: sim (no headset tangents)
 vr::Mat4 vrsys_panel_in_anchor(bool screen);
+bool vrsys_hand_in_game(vr::Mat4* pose_lh);    // the gun hand in the game camera's space (LH, metres)
+bool vrsys_hand_in_anchor(vr::Mat4* pose_rh);  // the gun hand relative to the anchor (RH, metres)
+bool vrsys_head_in_anchor(vr::Mat4* pose_rh);
+bool vrsys_controller(bool gun_hand, CtlState* out);  // openvr: the controller; sim: scripted buttons
+void vrsys_haptic(unsigned microseconds);      // pulse on the gun hand
+void vrsys_sim_aim_at(const float p_anchor_rh[3]);  // sim: point the hand at a point (anchor space)
 void vrsys_submit(ID3D11Texture2D* eyes, ID3D11Texture2D* hud, ID3D11Texture2D* screen);
 
 // Desktop mirror (mirror.cpp).
 void mirror_stereo(IDirect3DDevice9* dev, IDirect3DTexture9* eyes, IDirect3DTexture9* hud);
 void mirror_flat(IDirect3DDevice9* dev, IDirect3DTexture9* screen);
 void mirror_release();
+void draw_dots(IDirect3DDevice9* dev, IDirect3DSurface9* target, const float (*xy)[2], int n, float radius, D3DCOLOR colour);
 
 // Engine patches (engine.cpp): frame limiter, culling widening.
 void engine_frame(bool stereo_next_frame);  // once per Present

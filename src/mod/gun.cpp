@@ -1,0 +1,516 @@
+// The controller is the gun (design: "Gun and input"). Every shot path of player 1 is fed the
+// gun hand's ray instead of the camera's ray through the mouse cursor, so the game's own ray casts
+// decide the hits from the hand's position (parallax included):
+//
+//   0x50D110 cWeapon::FireBullets(origin*, mode, travelled), thiscall, ret 0xC. Called by the
+//            weapon's fire 0x52B090 (return address 0x52B164) with a copy of the player's aim origin
+//            (player+0x1E0); it ray casts along cWeapon+0x7B4 (the aim direction, re-aimed each
+//            frame by the game) scaled to the weapon's range, with spread for multi-pellet weapons.
+//            Overridden: our own origin vector (the game's isn't written) and +0x7B4 (length kept).
+//            Its recursive calls for bullets that go on through a hit (mode + 1, from 0x50D89B)
+//            are left alone, as are other callers.
+//   0x4E1330 the weapon-type-5 shot (a projectile; 0x52B090 when [weapon+4]+0x20 == 5): origin*,
+//            thiscall, ret 4. It adds a camera-space offset (-5, -10, 0) to the origin (written
+//            back through the pointer, so ours is a copy) and flies along player+0x1F0. Overridden:
+//            the origin (minus that offset, so the projectile starts at the hand) and player+0x1F0
+//            for the duration of the call.
+//   0x42B900, 0x479250  cursor-driven sphere checks (pickups, targets; radius 80 / 160) with
+//            player* (thiscall, ret 4): segment from ScreenToWorld(cursor) (a point on the near
+//            plane) along normalize(that - player+0x1E0) * range. For the call, the cursor is moved
+//            to where the hand's ray crosses the near plane and player+0x1E0 to a point behind it
+//            on the same line, so the segment runs along the hand's ray.
+//   0x5295F0 / 0x51FBD0  SetCursorX / SetCursorY (thiscall, float, ret 4; clamp to the screen):
+//            player 1's cursor is set to the projection of the aim point (where the hand's ray meets
+//            the scene: the game's ray cast 0x5514E0, or 10 m out), so the game's own aim (the
+//            per-frame direction player+0x1F0, the crosshair, anything else reading the cursor)
+//            agrees with the gun.
+//
+// The hand's world ray: the gun hand in the game camera's space (vrsys_hand_in_game, the same
+// anchor transform as the eyes) through the inverse of the engine's view matrix (0x9C7E48) of the
+// last frame drawn - the frame the player aimed at.
+//
+// The probe's dev overrides (`aimdir`, `aimorigin`) still apply on top.
+#include "common.h"
+
+#include <intrin.h>
+
+#include <atomic>
+#include <cmath>
+#include <cstring>
+#include <mutex>
+
+#include "../vr/aim.h"
+
+#pragma intrinsic(_ReturnAddress)
+
+namespace hv {
+
+constexpr uintptr_t kGameControl = 0x99B708;  // cGameControl; +0x24 player 1; +0x64 camera
+constexpr uintptr_t kViewVa = 0x9C7E48;
+constexpr uintptr_t kFireRet = 0x52B164;      // FireBullets' return address in the weapon's fire
+constexpr float kMissDistance = 1000;         // units (10 m): the aim point when the ray hits nothing
+
+using Fire_t = void(__fastcall*)(void* self, void* edx, float* origin, int mode, float travelled);
+using FireProj_t = void(__fastcall*)(void* self, void* edx, float* origin);
+using Sphere_t = unsigned(__fastcall*)(void* self, void* edx, uint8_t* player);
+using SetCursor_t = void(__fastcall*)(uint8_t* player, void* edx, float v);
+using Unproject_t = void(__cdecl*)(float x, float y, float* out);
+using RayCast_t = int(__cdecl*)(int, const float* origin, const float* seg, int, void* result);
+using RayResult_t = void(__fastcall*)(void* self, void* edx);
+using QuatToMat_t = void(__cdecl*)(float* mat, const float* quat);
+using MatVec_t = void(__cdecl*)(float* out, const float* mat, const float* vec);
+
+static Fire_t o_fire;
+static FireProj_t o_fire_proj;
+static Sphere_t o_sphere_a, o_sphere_b;
+static SetCursor_t o_setx, o_sety;
+
+// --- dev overrides (`aimdir`, `aimorigin`) ---
+static std::mutex g_dev_mx;
+static bool g_dev_dir, g_dev_origin, g_capture_next;
+static float g_dev_aim_dir[3], g_dev_aim_origin[3];
+
+void gun_capture_next() {
+    std::lock_guard lock(g_dev_mx);
+    g_capture_next = true;
+    g_dev_dir = false;
+}
+
+void gun_set_dir(bool on, float x, float y, float z) {
+    std::lock_guard lock(g_dev_mx);
+    g_dev_dir = on;
+    const float n = std::sqrt(x * x + y * y + z * z);
+    if (n > 0) g_dev_aim_dir[0] = x / n, g_dev_aim_dir[1] = y / n, g_dev_aim_dir[2] = z / n;
+}
+
+void gun_set_origin(bool on, float x, float y, float z) {
+    std::lock_guard lock(g_dev_mx);
+    g_dev_origin = on;
+    g_dev_aim_origin[0] = x, g_dev_aim_origin[1] = y, g_dev_aim_origin[2] = z;
+}
+
+// --- game reads and calls (game thread) ---
+
+static uintptr_t read_u32(uintptr_t addr) {
+    uintptr_t v = 0;
+    return safe_copy(&v, addr, 4) ? v : 0;
+}
+
+static uintptr_t player1() {
+    const uintptr_t gc = *reinterpret_cast<const volatile uintptr_t*>(va(kGameControl));
+    return gc ? read_u32(gc + 0x24) : 0;
+}
+
+static bool read_view(vr::Mat4* view) {
+    float v[16];
+    if (!safe_copy(v, va(kViewVa), sizeof v)) return false;
+    *view = vr::from_d3dx(v);
+    return true;
+}
+
+// The current weapon's range (units) and data block ([player+0x224] = cWeapon, +4 = its data).
+static float weapon_range(uintptr_t player, uintptr_t* data_out = nullptr) {
+    const uintptr_t weapon = read_u32(player + 0x224), data = weapon ? read_u32(weapon + 4) : 0;
+    if (data_out) *data_out = data;
+    float r = 0;
+    if (data && safe_copy(&r, data + 0x204, 4) && r > 10 && r < 1e6f) return r;
+    return 20000;
+}
+
+static bool seh_unproject(float x, float y, float out[4]) {
+    alignas(16) float buf[8] = {};
+    __try {
+        reinterpret_cast<Unproject_t>(va(0x655620))(x, y, buf);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    memcpy(out, buf, 16);
+    return true;
+}
+
+// ScreenToWorld is affine in the cursor: base + x du + y dv.
+static bool unproject_basis(float base[3], float du[3], float dv[3]) {
+    float a[4], b[4], c[4];
+    if (!seh_unproject(0, 0, a) || !seh_unproject(100, 0, b) || !seh_unproject(0, 100, c)) return false;
+    for (int i = 0; i < 3; ++i) base[i] = a[i], du[i] = (b[i] - a[i]) / 100, dv[i] = (c[i] - a[i]) / 100;
+    return true;
+}
+
+static int seh_raycast(const float* org, const float* seg, uint8_t* res) {
+    __try {
+        reinterpret_cast<RayResult_t>(va(0x4D6830))(res, nullptr);
+        return reinterpret_cast<RayCast_t>(va(0x5514E0))(0, org, seg, 0, res);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// The game's own world ray cast (as FireBullets uses it): the first hit along o + d * range.
+static bool cast_ray(const float o[3], const float d[3], float range, float hit[3]) {
+    alignas(16) float org[4] = {o[0], o[1], o[2], 1};
+    alignas(16) float seg[4] = {d[0] * range, d[1] * range, d[2] * range, 1};
+    alignas(16) uint8_t res[0x80] = {};
+    const int r = seh_raycast(org, seg, res);
+    if (r < 0) {
+        static int warned;
+        if (warned++ < 3) logf("gun: ray cast raised an exception");
+        return false;
+    }
+    if (!r) return false;
+    memcpy(hit, res, 12);
+    return true;
+}
+
+// --- the aim ---
+
+static std::atomic<unsigned> g_frame{1};
+void gun_frame() { ++g_frame; }
+
+struct Aim {
+    unsigned frame = 0;
+    bool valid = false;  // the controller aims this frame
+    vr::Ray ray{};       // the hand's world ray
+    float point[3] = {};
+    bool hit = false;
+    float cursor[2] = {};
+    bool cursor_ok = false;
+};
+static std::mutex g_aim_mx;
+static Aim g_aim;
+static std::atomic<bool> g_handat_pending;
+static float g_handat[2];
+static std::atomic<int> g_hooks_installed;
+static std::atomic<bool> g_god;  // dev `vr god 1`: player 1's health (player+0x20C, 10 = full) kept full
+void gun_set_god(bool on) { g_god = on; }
+
+bool gun_aim_active() {
+    if (g_vr.mode == VrMode::off || !g_vr.aim || !g_hooks_installed) return false;
+    vr::Mat4 h;
+    return vrsys_hand_in_game(&h) && game_state().gameplay;
+}
+
+static bool hand_world_ray(vr::Ray* out) {
+    vr::Mat4 hand, view;
+    if (!vrsys_hand_in_game(&hand) || !read_view(&view)) return false;
+    return vr::camera_ray_to_world(view, vr::pose_ray_lh(hand), g_vr.unit_m, out);
+}
+
+// Sim `vr handat X Y`: what the camera sees through cursor (X, Y) -> point the hand at it.
+static void do_handat(uintptr_t player) {
+    float base[3], du[3], dv[3], o[4];
+    vr::Mat4 view;
+    if (!unproject_basis(base, du, dv) || !safe_copy(o, player + 0x1E0, 16) || !read_view(&view)) {
+        logf("vr handat: no camera");
+        return;
+    }
+    float p[3], d[3];
+    for (int i = 0; i < 3; ++i) p[i] = base[i] + g_handat[0] * du[i] + g_handat[1] * dv[i], d[i] = p[i] - o[i];
+    const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    for (float& c : d) c /= n;
+    float hit[3];
+    const bool ok = cast_ray(o, d, weapon_range(player), hit);
+    if (!ok)
+        for (int i = 0; i < 3; ++i) hit[i] = o[i] + d[i] * kMissDistance;
+    float cam[3];
+    if (!vr::world_point_to_camera(view, hit, g_vr.unit_m, cam)) return;
+    const float anchor_rh[3] = {cam[0], cam[1], -cam[2]};  // camera space (LH) -> anchor space (RH)
+    logf("vr handat %.1f %.1f: camera ray %s at world %.1f %.1f %.1f (%.2f m ahead)", g_handat[0], g_handat[1], ok ? "hits" : "misses",
+         hit[0], hit[1], hit[2], cam[2]);
+    vrsys_sim_aim_at(anchor_rh);
+}
+
+void gun_request_handat(float x, float y) {
+    g_handat[0] = x, g_handat[1] = y;
+    g_handat_pending = true;
+}
+
+// Once per game frame (lazily, from the cursor setters): the hand's ray, where it meets the scene,
+// and the cursor that projects there.
+static void aim_update(uintptr_t player) {
+    const unsigned frame = g_frame.load();
+    {
+        std::lock_guard lock(g_aim_mx);
+        if (g_aim.frame == frame) return;
+    }
+    if (g_handat_pending.exchange(false)) do_handat(player);
+    Aim a;
+    a.frame = frame;
+    if (gun_aim_active() && hand_world_ray(&a.ray)) {
+        a.valid = true;
+        a.hit = cast_ray(a.ray.o, a.ray.d, weapon_range(player), a.point);
+        if (!a.hit)
+            for (int i = 0; i < 3; ++i) a.point[i] = a.ray.o[i] + a.ray.d[i] * kMissDistance;
+        // The cursor whose camera ray (from the game's aim origin) passes through the aim point.
+        float base[3], du[3], dv[3], o[4], d[3], p[3], t;
+        if (unproject_basis(base, du, dv) && safe_copy(o, player + 0x1E0, 16)) {
+            for (int i = 0; i < 3; ++i) d[i] = a.point[i] - o[i];
+            a.cursor_ok = vr::cursor_on_line(base, du, dv, o, d, &a.cursor[0], &a.cursor[1], p, &t) && t > 0;
+        }
+    }
+    std::lock_guard lock(g_aim_mx);
+    g_aim = a;
+}
+
+bool gun_aim_point(float out[3], bool* hit) {
+    std::lock_guard lock(g_aim_mx);
+    if (!g_aim.valid || g_frame.load() - g_aim.frame > 30) return false;
+    memcpy(out, g_aim.point, 12);
+    *hit = g_aim.hit;
+    return true;
+}
+
+// --- cursor setters ---
+
+static bool cursor_override(uint8_t* player, int axis, float* v) {
+    if (reinterpret_cast<uintptr_t>(player) != player1()) return false;
+    if (g_god) {
+        auto health = reinterpret_cast<volatile int32_t*>(player + 0x20C);
+        if (*health > 0 && *health < 10) *health = 10;
+    }
+    aim_update(reinterpret_cast<uintptr_t>(player));
+    std::lock_guard lock(g_aim_mx);
+    if (!g_aim.valid || !g_aim.cursor_ok) return false;
+    *v = g_aim.cursor[axis];
+    return true;
+}
+
+static void __fastcall hk_setx(uint8_t* player, void* edx, float x) {
+    cursor_override(player, 0, &x);
+    o_setx(player, edx, x);
+}
+
+static void __fastcall hk_sety(uint8_t* player, void* edx, float y) {
+    cursor_override(player, 1, &y);
+    o_sety(player, edx, y);
+}
+
+// --- shots ---
+
+static void shot_feedback(uintptr_t player) {
+    uintptr_t data = 0;
+    weapon_range(player, &data);
+    uint32_t pellets = 1, type = 0, sub = 0;
+    if (data) safe_copy(&pellets, data + 0x1E0, 4), safe_copy(&type, data + 0x20, 4), safe_copy(&sub, data + 0x24, 4);
+    // Shotguns fire several pellets; the hand cannon is weapon kind 0xB (see gun_log_state).
+    const bool strong = pellets > 1 || sub == 0xB;
+    input_shot(strong ? 2.f : 1.f);
+    static uintptr_t last_data;
+    if (data != last_data) {
+        last_data = data;
+        logf("gun: weapon data %p: type %u kind %u pellets %u range %.0f -> %s haptics", reinterpret_cast<void*>(data), type, sub, pellets,
+             weapon_range(player), strong ? "strong" : "normal");
+    }
+}
+
+static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, float travelled) {
+    auto w = static_cast<uint8_t*>(self);
+    auto dir = reinterpret_cast<float*>(w + 0x7B4);
+    const uintptr_t owner = read_u32(reinterpret_cast<uintptr_t>(w + 0x794)), p1 = player1();
+    const bool player_shot = (mode & 0xFF) == 0 && owner && owner == p1 &&
+                             reinterpret_cast<uintptr_t>(_ReturnAddress()) == va(kFireRet);
+    alignas(16) float own[4] = {origin[0], origin[1], origin[2], origin[3]};
+    float* use_origin = origin;
+    static int logged;
+    vr::Ray r;
+    if (player_shot && gun_aim_active() && hand_world_ray(&r)) {
+        float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        if (len <= 0) len = 1;
+        if (logged < 400)
+            logf("shot: game origin %.1f %.1f %.1f dir %.4f %.4f %.4f -> hand origin %.1f %.1f %.1f dir %.4f %.4f %.4f", origin[0],
+                 origin[1], origin[2], dir[0] / len, dir[1] / len, dir[2] / len, r.o[0], r.o[1], r.o[2], r.d[0], r.d[1], r.d[2]);
+        for (int i = 0; i < 3; ++i) dir[i] = r.d[i] * len, own[i] = r.o[i];
+        use_origin = own;
+    } else if (logged < 400) {
+        logf("FireBullets weapon=%p mode=%d travelled=%g origin %.1f %.1f %.1f dir %.4f %.4f %.4f (%s)", self, mode & 0xFF, travelled,
+             origin[0], origin[1], origin[2], dir[0], dir[1], dir[2], player_shot ? "player 1, mouse aim" : "not overridden");
+    }
+    ++logged;
+    {
+        std::lock_guard lock(g_dev_mx);
+        if (g_capture_next) {
+            g_capture_next = false;
+            const float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+            for (int i = 0; i < 3; ++i) g_dev_aim_dir[i] = n > 0 ? dir[i] / n : 0;
+            g_dev_dir = true;
+            logf("  -> direction captured for later shots");
+        } else if (g_dev_dir) {
+            float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+            if (len <= 0) len = 1;
+            for (int i = 0; i < 3; ++i) dir[i] = g_dev_aim_dir[i] * len;
+            logf("  -> dir overridden %.4f %.4f %.4f", dir[0], dir[1], dir[2]);
+        }
+        if (g_dev_origin) {
+            for (int i = 0; i < 3; ++i) own[i] = g_dev_aim_origin[i];
+            use_origin = own;
+            logf("  -> origin overridden %.1f %.1f %.1f", own[0], own[1], own[2]);
+        }
+    }
+    if (player_shot) shot_feedback(owner);
+    o_fire(self, edx, use_origin, mode, travelled);
+}
+
+// The camera-space offset 0x4E1330 adds to a projectile's origin, as the game computes it.
+static bool seh_proj_offset(float out[4]) {
+    __try {
+        const uintptr_t gc = *reinterpret_cast<const volatile uintptr_t*>(va(kGameControl));
+        const uintptr_t cam = *reinterpret_cast<const uintptr_t*>(gc + 0x64);
+        const uintptr_t node = *reinterpret_cast<const uintptr_t*>(cam + 0xDC);
+        alignas(16) float mat[16];
+        alignas(16) const float v[4] = {-5, -10, 0, 0};
+        alignas(16) float r[4] = {};
+        reinterpret_cast<QuatToMat_t>(va(0x6A44A0))(mat, reinterpret_cast<const float*>(node + 0x14));
+        reinterpret_cast<MatVec_t>(va(0x6A2A50))(r, mat, v);
+        memcpy(out, r, 16);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static void __fastcall hk_fire_proj(void* self, void* edx, float* origin) {
+    auto w = static_cast<uint8_t*>(self);
+    const uintptr_t owner = read_u32(reinterpret_cast<uintptr_t>(w + 0x794));
+    vr::Ray r;
+    float off[4];
+    if (owner && owner == player1() && gun_aim_active() && hand_world_ray(&r) && seh_proj_offset(off)) {
+        auto pdir = reinterpret_cast<float*>(owner + 0x1F0);
+        float saved[3];
+        memcpy(saved, pdir, 12);
+        memcpy(pdir, r.d, 12);
+        alignas(16) float own[4] = {r.o[0] - off[0], r.o[1] - off[1], r.o[2] - off[2], origin[3]};
+        logf("shot (projectile): hand origin %.1f %.1f %.1f dir %.4f %.4f %.4f (offset %.1f %.1f %.1f)", r.o[0], r.o[1], r.o[2], r.d[0],
+             r.d[1], r.d[2], off[0], off[1], off[2]);
+        shot_feedback(owner);
+        o_fire_proj(self, edx, own);
+        memcpy(pdir, saved, 12);
+        return;
+    }
+    o_fire_proj(self, edx, origin);
+}
+
+// Sphere checks: the cursor and aim origin moved onto the hand's ray for the call.
+struct SphereOverride {
+    uint8_t* p = nullptr;
+    float cursor[2], origin[3];
+    SphereOverride(uint8_t* player, const char* name) {
+        if (!player || reinterpret_cast<uintptr_t>(player) != player1() || !gun_aim_active()) return;
+        vr::Ray r;
+        float base[3], du[3], dv[3], x, y, pt[3], t;
+        if (!hand_world_ray(&r) || !unproject_basis(base, du, dv) || !vr::cursor_on_line(base, du, dv, r.o, r.d, &x, &y, pt, &t))
+            return;
+        if (std::fabs(t) > 1000) return;  // the hand's ray nearly parallel to the near plane
+        p = player;
+        auto c = reinterpret_cast<float*>(p + 0x1BC);
+        auto o = reinterpret_cast<float*>(p + 0x1E0);
+        memcpy(cursor, c, 8);
+        memcpy(origin, o, 12);
+        c[0] = x, c[1] = y;
+        for (int i = 0; i < 3; ++i) o[i] = pt[i] - r.d[i] * 100;
+        static int logged;
+        if (logged++ < 10) {
+            float q[4];
+            seh_unproject(x, y, q);
+            logf("gun: %s on the hand's ray: cursor %.1f %.1f (was %.1f %.1f), near-plane point %.2f %.2f %.2f (check %.2f %.2f %.2f)",
+                 name, x, y, cursor[0], cursor[1], pt[0], pt[1], pt[2], q[0], q[1], q[2]);
+        }
+    }
+    ~SphereOverride() {
+        if (!p) return;
+        memcpy(p + 0x1BC, cursor, 8);
+        memcpy(p + 0x1E0, origin, 12);
+    }
+};
+
+static unsigned __fastcall hk_sphere_a(void* self, void* edx, uint8_t* player) {
+    SphereOverride o(player, "sphere check 0x42B900");
+    return o_sphere_a(self, edx, player);
+}
+
+static unsigned __fastcall hk_sphere_b(void* self, void* edx, uint8_t* player) {
+    SphereOverride o(player, "sphere check 0x479250");
+    return o_sphere_b(self, edx, player);
+}
+
+// --- input actions (diagnostics) ---
+// 0x426A20 (thiscall input, player*, player index, bool; ret 0xC) turns the input map's action
+// values into player actions: 3 fire (0x511650), 4 0x40DE20 (type-4 pump / +0x790), 5 reload
+// (0x551C20 -> weapon+0x78F; also the motion "shake" gesture via 0x47D190), 0xB next weapon
+// (0x485060 -> 0x4F9A50), 0xC previous weapon (0x4E9C10 -> 0x5564E0). Action value objects:
+// [[input + 0x2C + index*4] + 0x6C][action] + 0x2C (int; the bound inputs' sum, clamped to +0x34).
+using Actions_t = void(__fastcall*)(void* input, void* edx, void* player, int index, int flag);
+static Actions_t o_actions;
+static std::atomic<bool> g_log_actions;
+void gun_log_actions(bool on) { g_log_actions = on; }
+
+static void __fastcall hk_actions(void* input, void* edx, void* player, int index, int flag) {
+    if (g_log_actions && index >= 0 && index < 4) {
+        static int last[0x20];
+        const uintptr_t set = read_u32(reinterpret_cast<uintptr_t>(input) + 0x2C + index * 4);
+        const uintptr_t arr = set ? read_u32(set + 0x6C) : 0;
+        for (int a = 0; arr && a < 0x20; ++a) {
+            const uintptr_t obj = read_u32(arr + a * 4);
+            int v = 0;
+            if (obj && safe_copy(&v, obj + 0x2C, 4) && v != last[a]) {
+                logf("input action %d (player %d): %d -> %d", a, index, last[a], v);
+                last[a] = v;
+            }
+        }
+    }
+    o_actions(input, edx, player, index, flag);
+}
+
+// --- `vr gun` ---
+
+void gun_log_state() {
+    const uintptr_t p = player1();
+    const uintptr_t weapon = p ? read_u32(p + 0x224) : 0;
+    uintptr_t data = 0;
+    const float range = p ? weapon_range(p, &data) : 0;
+    uint32_t ammo = 0, type = 0, sub = 0, pellets = 0, clip = 0;
+    uint8_t flags[0x24] = {};
+    if (weapon) safe_copy(&ammo, weapon + 0x760, 4), safe_copy(flags, weapon + 0x78C, sizeof flags);
+    if (data) safe_copy(&type, data + 0x20, 4), safe_copy(&sub, data + 0x24, 4), safe_copy(&pellets, data + 0x1E0, 4), safe_copy(&clip, data + 0x1C4, 4);
+    float cur[2] = {}, org[3] = {}, dir[3] = {};
+    if (p) safe_copy(cur, p + 0x1BC, 8), safe_copy(org, p + 0x1E0, 12), safe_copy(dir, p + 0x1F0, 12);
+    logf("vr gun: player %p weapon %p data %p type %u kind %u pellets %u clip %u ammo %u range %.0f; flags +78C %02x %02x %02x %02x %02x "
+         "+7A0 %02x; cursor %.1f %.1f; aim origin %.1f %.1f %.1f dir %.4f %.4f %.4f",
+         reinterpret_cast<void*>(p), reinterpret_cast<void*>(weapon), reinterpret_cast<void*>(data), type, sub, pellets, clip, ammo, range,
+         flags[0], flags[1], flags[2], flags[3], flags[4], flags[0x14], cur[0], cur[1], org[0], org[1], org[2], dir[0], dir[1], dir[2]);
+    Aim a;
+    {
+        std::lock_guard lock(g_aim_mx);
+        a = g_aim;
+    }
+    logf("vr gun: aim %s (frame %u, now %u): hand %.1f %.1f %.1f dir %.4f %.4f %.4f -> %s %.1f %.1f %.1f, cursor %s %.1f %.1f",
+         a.valid ? "on" : "off", a.frame, g_frame.load(), a.ray.o[0], a.ray.o[1], a.ray.o[2], a.ray.d[0], a.ray.d[1], a.ray.d[2],
+         a.hit ? "hits" : "misses, 10 m:", a.point[0], a.point[1], a.point[2], a.cursor_ok ? "" : "(none)", a.cursor[0], a.cursor[1]);
+}
+
+void install_gun_hooks() {
+    static bool done;
+    if (done) return;
+    done = true;
+    static const uint8_t fire[9] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x74, 0x03, 0x00, 0x00};
+    static const uint8_t proj[9] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00};
+    static const uint8_t sphere_a[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x70};
+    static const uint8_t sphere_b[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x78};
+    static const uint8_t setter[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08};
+    o_fire = reinterpret_cast<Fire_t>(install_detour(0x50D110, fire, sizeof fire, reinterpret_cast<void*>(hk_fire), "FireBullets 0x50D110"));
+    if (g_vr.mode == VrMode::off) return;  // mode=off: only the probe's logging FireBullets hook
+    o_fire_proj = reinterpret_cast<FireProj_t>(
+        install_detour(0x4E1330, proj, sizeof proj, reinterpret_cast<void*>(hk_fire_proj), "projectile shot 0x4E1330"));
+    o_sphere_a = reinterpret_cast<Sphere_t>(
+        install_detour(0x42B900, sphere_a, sizeof sphere_a, reinterpret_cast<void*>(hk_sphere_a), "sphere check 0x42B900"));
+    o_sphere_b = reinterpret_cast<Sphere_t>(
+        install_detour(0x479250, sphere_b, sizeof sphere_b, reinterpret_cast<void*>(hk_sphere_b), "sphere check 0x479250"));
+    o_setx = reinterpret_cast<SetCursor_t>(install_detour(0x5295F0, setter, sizeof setter, reinterpret_cast<void*>(hk_setx), "SetCursorX 0x5295F0"));
+    o_sety = reinterpret_cast<SetCursor_t>(install_detour(0x51FBD0, setter, sizeof setter, reinterpret_cast<void*>(hk_sety), "SetCursorY 0x51FBD0"));
+    static const uint8_t actions[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+    o_actions = reinterpret_cast<Actions_t>(install_detour(0x426A20, actions, sizeof actions, reinterpret_cast<void*>(hk_actions), "input actions 0x426A20"));
+    // The aim needs all of them; a detour that didn't go in (bytes differ) turns controller aiming off.
+    const bool all = o_fire && o_fire_proj && o_sphere_a && o_sphere_b && o_setx && o_sety;
+    g_hooks_installed = all;
+    logf("gun: controller aim %s", all ? "ready" : "OFF (a shot-path detour could not be installed)");
+}
+
+}  // namespace hv

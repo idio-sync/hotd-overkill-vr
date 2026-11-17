@@ -22,9 +22,11 @@ Mat4 flip_z(const Mat4& p);
 // that keeps the seated player's heading but not head tilt.
 Mat4 yaw_only_rh(const Mat4& p);
 
-// Head pose relative to the anchor, as a pose in the game camera's (left-handed) space, metres.
-// The anchor is where the game's rail camera sits in the room.
-Mat4 head_in_game(const Mat4& anchor_rh, const Mat4& head_rh);
+// A tracked pose (head, controller) relative to the anchor, as a pose in the game camera's
+// (left-handed) space, metres. The anchor is where the game's rail camera sits in the room. This
+// is the one head/hand-to-game-camera transform: the eyes and the gun both go through it.
+Mat4 pose_in_game(const Mat4& anchor_rh, const Mat4& pose_rh);
+inline Mat4 head_in_game(const Mat4& anchor_rh, const Mat4& head_rh) { return pose_in_game(anchor_rh, head_rh); }
 
 // Eye pose in the game camera's space: head (left-handed, from head_in_game) composed with an
 // OpenVR eye-to-head transform (right-handed).

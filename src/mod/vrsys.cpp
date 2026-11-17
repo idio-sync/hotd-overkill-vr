@@ -2,6 +2,13 @@
 // src/vr/vr.cpp (OpenVR init, poses, yaw-only recentre anchor, panels as SteamVR overlays, black
 // eyes for flat frames).
 //
+// Controllers (milestone 2): the gun hand's pose comes from the same WaitGetPoses call as the
+// head, composed with the controller render model's "tip" (where SteamVR's own pointers come from;
+// k7-vr: the Steam Frame controllers report as oculus_quest2 with the tip ~40 degrees below the raw
+// axis) and [vr] hand_offset / hand_pitch. Buttons are read through the legacy controller state
+// (GetControllerState): no action manifest, which would switch the app off legacy input. Sim mode
+// has a scripted hand (position and direction relative to the head) and scripted buttons.
+//
 // Spaces (src/vr/xform.h): OpenVR tracking space is right-handed, metres. The anchor is a
 // yaw-only pose of the head taken at recentre (level start, `vr recentre`); the game's rail
 // camera sits at the anchor, so the head relative to the anchor, converted to the left-handed
@@ -17,7 +24,9 @@
 #include <openvr.h>
 
 #include <cmath>
+#include <mutex>
 
+#include "../vr/aim.h"
 #include "../vr/xform.h"
 
 namespace hv {
@@ -30,6 +39,22 @@ static vr::Mat4 g_eye_to_head[2] = {vr::identity(), vr::identity()};
 static float g_tan[2][4];
 static bool g_recentre = true;
 static constexpr float kPi = 3.14159265f;
+
+// The gun hand (tip and hand_offset/hand_pitch applied), tracking space; read by the game thread.
+static std::mutex g_hand_mx;
+static vr::Mat4 g_hand = vr::identity();
+static bool g_hand_valid;
+static vr::Mat4 g_hand_anchor = vr::identity(), g_hand_head = vr::identity();  // the anchor/head with it
+
+struct Controller {
+    ::vr::TrackedDeviceIndex_t device = ::vr::k_unTrackedDeviceIndexInvalid;
+    int trigger_axis = 1;
+    CtlState state;
+};
+static Controller g_ctl[2];          // [0] gun hand, [1] the other
+static CtlState g_sim_ctl[2];        // sim: scripted buttons
+static vr::Mat4 g_tip = vr::identity();
+static ::vr::TrackedDeviceIndex_t g_tip_device = ::vr::k_unTrackedDeviceIndexInvalid;
 
 bool vrsys_openvr() { return g_openvr; }
 
@@ -95,6 +120,97 @@ void vrsys_recentre() {
     g_recentre = true;
 }
 
+static ::vr::ETrackedControllerRole role_of(bool gun) {
+    const bool right = gun != g_vr.left_hand;
+    return right ? ::vr::TrackedControllerRole_RightHand : ::vr::TrackedControllerRole_LeftHand;
+}
+
+// The pointing pose relative to the controller's raw pose: its render model's tip component.
+static vr::Mat4 controller_tip(::vr::TrackedDeviceIndex_t device) {
+    if (device == g_tip_device) return g_tip;
+    g_tip_device = device;
+    g_tip = vr::identity();
+    char model[256] = {};
+    g_sys->GetStringTrackedDeviceProperty(device, ::vr::Prop_RenderModelName_String, model, sizeof model);
+    ::vr::IVRRenderModels* models = ::vr::VRRenderModels();
+    ::vr::VRControllerState_t st{};
+    ::vr::RenderModel_ControllerMode_State_t mode{};
+    ::vr::RenderModel_ComponentState_t comp{};
+    if (models && model[0] && models->GetComponentState(model, ::vr::k_pch_Controller_Component_Tip, &st, &mode, &comp)) {
+        g_tip = vr::from_rows34(comp.mTrackingToComponentLocal.m);
+        const float up = std::asin(std::fmax(-1.f, std::fmin(1.f, -g_tip.m[1][2]))) * 180 / kPi;
+        logf("vr: gun controller model '%s': tip at %.3f %.3f %.3f m, pointing %.1f degrees %s the raw axis", model, g_tip.m[0][3],
+             g_tip.m[1][3], g_tip.m[2][3], std::fabs(up), up >= 0 ? "above" : "below");
+    } else {
+        logf("vr: gun controller model '%s' has no tip component; aiming along its raw axis (hand_pitch adjusts)", model);
+    }
+    return g_tip;
+}
+
+static void find_trigger_axis(Controller& c, bool gun) {
+    c.trigger_axis = -1;
+    for (int i = 0; i < int(::vr::k_unControllerStateAxisCount); ++i) {
+        const int32_t type = g_sys->GetInt32TrackedDeviceProperty(c.device, ::vr::ETrackedDeviceProperty(::vr::Prop_Axis0Type_Int32 + i));
+        if (type == ::vr::k_eControllerAxis_Trigger && c.trigger_axis < 0) c.trigger_axis = i;
+    }
+    const bool assumed = c.trigger_axis < 0;
+    if (assumed) c.trigger_axis = 1;  // SteamVR's legacy layout: stick/trackpad axis 0, trigger axis 1
+    char name[128] = {};
+    g_sys->GetStringTrackedDeviceProperty(c.device, ::vr::Prop_ControllerType_String, name, sizeof name);
+    logf("vr: %s controller '%s' (device %u), trigger axis %d%s", gun ? "gun" : "other", name, c.device, c.trigger_axis,
+         assumed ? " (assumed)" : "");
+}
+
+static void poll_controller(bool gun) {
+    Controller& c = g_ctl[gun ? 0 : 1];
+    const ::vr::TrackedDeviceIndex_t device = g_sys->GetTrackedDeviceIndexForControllerRole(role_of(gun));
+    if (device != c.device) {
+        c = Controller{};
+        c.device = device;
+        if (device != ::vr::k_unTrackedDeviceIndexInvalid) find_trigger_axis(c, gun);
+    }
+    c.state = CtlState{};
+    if (device == ::vr::k_unTrackedDeviceIndexInvalid) return;
+    ::vr::VRControllerState_t st;
+    if (!g_sys->GetControllerState(device, &st, sizeof st)) return;
+    auto pressed = [&](::vr::EVRButtonId id) { return (st.ulButtonPressed & ::vr::ButtonMaskFromId(id)) != 0; };
+    c.state.present = true;
+    c.state.trigger = st.rAxis[c.trigger_axis].x;
+    if (pressed(::vr::k_EButton_SteamVR_Trigger)) c.state.trigger = (std::max)(c.state.trigger, 1.f);
+    if (pressed(::vr::k_EButton_A)) c.state.buttons |= kBtnA;
+    if (pressed(::vr::k_EButton_ApplicationMenu)) c.state.buttons |= kBtnB;
+    if (pressed(::vr::k_EButton_Grip)) c.state.buttons |= kBtnGrip;
+    if (pressed(::vr::k_EButton_SteamVR_Touchpad)) c.state.buttons |= kBtnStick;
+    static uint64_t last[2];
+    if (st.ulButtonPressed != last[gun ? 0 : 1]) {
+        last[gun ? 0 : 1] = st.ulButtonPressed;
+        logf("vr: %s controller buttons %016llx", gun ? "gun" : "other", st.ulButtonPressed);
+    }
+}
+
+bool vrsys_controller(bool gun, CtlState* out) {
+    *out = g_openvr ? g_ctl[gun ? 0 : 1].state : g_sim_ctl[gun ? 0 : 1];
+    if (!g_openvr) out->present = g_vr.mode != VrMode::off;
+    if (out->trigger > 0.5f) out->buttons |= kBtnTrigger;
+    return out->present;
+}
+
+void vrsys_sim_buttons(bool gun, uint32_t buttons, float trigger) {
+    g_sim_ctl[gun ? 0 : 1].buttons = buttons;
+    g_sim_ctl[gun ? 0 : 1].trigger = trigger;
+}
+
+void vrsys_haptic(unsigned us) {
+    if (us == 0) return;
+    if (!g_openvr) {
+        static int logged;
+        if (logged++ < 20) logf("vr: (sim) haptic pulse %u us", us);
+        return;
+    }
+    const ::vr::TrackedDeviceIndex_t d = g_ctl[0].device;
+    if (d != ::vr::k_unTrackedDeviceIndexInvalid) g_sys->TriggerHapticPulse(d, 0, (unsigned short)((std::min)(us, 3999u)));
+}
+
 static vr::Mat4 sim_head() {
     // The scripted head, as a right-handed pose (the conversion is its own inverse).
     return vr::flip_z(vr::rotation_yaw_pitch(g_vr.sim_yaw_deg * kPi / 180, g_vr.sim_pitch_deg * kPi / 180));
@@ -107,6 +223,15 @@ void vrsys_wait_poses() {
         g_anchor = vr::identity();
         for (int eye = 0; eye < 2; ++eye) g_eye_to_head[eye] = vr::translation(eye == 0 ? -g_vr.ipd_m / 2 : g_vr.ipd_m / 2, 0, 0);
         g_recentre = false;
+        // The scripted hand: position and direction relative to the head (no tip or hand_pitch:
+        // those correct a physical controller).
+        const vr::Mat4 hand = vr::mul(vr::mul(g_head, vr::translation(g_vr.sim_hand[0], g_vr.sim_hand[1], g_vr.sim_hand[2])),
+                                      vr::rh_yaw_pitch(g_vr.sim_hand_yaw * kPi / 180, g_vr.sim_hand_pitch * kPi / 180));
+        std::lock_guard lock(g_hand_mx);
+        g_hand = hand;
+        g_hand_valid = true;
+        g_hand_anchor = g_anchor;
+        g_hand_head = g_head;
         return;
     }
     ::vr::TrackedDevicePose_t poses[::vr::k_unMaxTrackedDeviceCount];
@@ -119,6 +244,51 @@ void vrsys_wait_poses() {
         g_recentre = false;
         logf("vr: recentred at %.2f %.2f %.2f m", g_anchor.m[0][3], g_anchor.m[1][3], g_anchor.m[2][3]);
     }
+    poll_controller(true);
+    poll_controller(false);
+    const ::vr::TrackedDeviceIndex_t gun = g_ctl[0].device;
+    const bool valid = gun < ::vr::k_unMaxTrackedDeviceCount && poses[gun].bPoseIsValid;
+    vr::Mat4 hand = vr::identity();
+    if (valid)
+        hand = vr::mul(vr::mul(vr::from_rows34(poses[gun].mDeviceToAbsoluteTracking.m), controller_tip(gun)),
+                       vr::hand_adjust(g_vr.hand_offset, g_vr.hand_pitch));
+    std::lock_guard lock(g_hand_mx);
+    if (valid) g_hand = hand;
+    g_hand_valid = valid;
+    g_hand_anchor = g_anchor;
+    g_hand_head = g_head;
+}
+
+// The gun hand through the same transform as the head (xform.h pose_in_game).
+bool vrsys_hand_in_game(vr::Mat4* pose_lh) {
+    std::lock_guard lock(g_hand_mx);
+    *pose_lh = vr::pose_in_game(g_hand_anchor, g_hand);
+    return g_hand_valid;
+}
+
+bool vrsys_hand_in_anchor(vr::Mat4* pose_rh) {
+    std::lock_guard lock(g_hand_mx);
+    *pose_rh = vr::mul(vr::rigid_inverse(g_hand_anchor), g_hand);
+    return g_hand_valid;
+}
+
+bool vrsys_head_in_anchor(vr::Mat4* pose_rh) {
+    std::lock_guard lock(g_hand_mx);
+    *pose_rh = vr::mul(vr::rigid_inverse(g_hand_anchor), g_hand_head);
+    return g_vr.mode != VrMode::off;
+}
+
+// Sim: turn the scripted hand towards a point given relative to the anchor (right-handed, metres).
+void vrsys_sim_aim_at(const float p[3]) {
+    const vr::Mat4 head = sim_head();
+    const vr::Mat4 at = vr::mul(head, vr::translation(g_vr.sim_hand[0], g_vr.sim_hand[1], g_vr.sim_hand[2]));
+    const float dir[3] = {p[0] - at.m[0][3], p[1] - at.m[1][3], p[2] - at.m[2][3]};
+    float yaw, pitch;
+    vr::yaw_pitch_towards(head, dir, &yaw, &pitch);
+    g_vr.sim_hand_yaw = yaw * 180 / kPi;
+    g_vr.sim_hand_pitch = pitch * 180 / kPi;
+    logf("vr: sim hand aimed at %.3f %.3f %.3f m: yaw %.2f pitch %.2f deg (hand at %.3f %.3f %.3f)", p[0], p[1], p[2], g_vr.sim_hand_yaw,
+         g_vr.sim_hand_pitch, at.m[0][3], at.m[1][3], at.m[2][3]);
 }
 
 // Eye `eye` relative to the anchor (right-handed, metres).

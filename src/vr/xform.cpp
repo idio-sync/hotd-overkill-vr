@@ -39,7 +39,7 @@ Mat4 yaw_only_rh(const Mat4& p) {
     return r;
 }
 
-Mat4 head_in_game(const Mat4& anchor_rh, const Mat4& head_rh) { return flip_z(mul(rigid_inverse(anchor_rh), head_rh)); }
+Mat4 pose_in_game(const Mat4& anchor_rh, const Mat4& pose_rh) { return flip_z(mul(rigid_inverse(anchor_rh), pose_rh)); }
 
 Mat4 eye_in_game(const Mat4& head_lh, const Mat4& eye_to_head_rh) { return mul(head_lh, flip_z(eye_to_head_rh)); }
 

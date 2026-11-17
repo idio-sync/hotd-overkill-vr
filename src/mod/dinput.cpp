@@ -25,7 +25,7 @@ static std::mutex g_mx;
 static std::unordered_map<void*, DevInfo> g_devs;
 static uint8_t g_keys[256];     // DIK_ codes, 0x80 = down
 static uint8_t g_buttons[8];    // mouse buttons
-static LONG g_dx, g_dy;         // pending relative mouse motion
+static LONG g_dx, g_dy, g_dz;   // pending relative mouse motion and wheel
 static std::deque<DIDEVICEOBJECTDATA> g_key_events, g_mouse_events;
 static DWORD g_seq;
 
@@ -63,6 +63,21 @@ void di_mouse_move(LONG dx, LONG dy) {
     g_dx += dx;
     g_dy += dy;
 }
+
+void di_mouse_wheel(LONG dz) {
+    std::lock_guard lock(g_mx);
+    g_dz += dz;
+    DIDEVICEOBJECTDATA e{};
+    e.dwOfs = DIMOFS_Z;
+    e.dwData = DWORD(dz);
+    e.dwTimeStamp = GetTickCount();
+    e.dwSequence = ++g_seq;
+    g_mouse_events.push_back(e);
+}
+
+// The real mouse is ignored in the minimized test window, and in VR modes once the controllers
+// drive the pointer (vrinput.cpp); the real keyboard only in the minimized test window.
+static bool ignore_real_dev(Kind k) { return ignore_real() || (k == Kind::mouse && input_owns_pointer()); }
 
 // IDirectInputDevice8A
 using GetDeviceState_t = HRESULT(STDMETHODCALLTYPE*)(IDirectInputDevice8A*, DWORD, LPVOID);
@@ -110,7 +125,7 @@ static HRESULT STDMETHODCALLTYPE hk_GetDeviceState(IDirectInputDevice8A* dev, DW
         i->logged_state = true;
         logf("DInput GetDeviceState %s size=%lu -> %08lx", i->kind == Kind::mouse ? "mouse" : "keyboard", size, hr);
     }
-    if (ignore_real() || FAILED(hr)) {
+    if (ignore_real_dev(i->kind) || FAILED(hr)) {
         memset(data, 0, size);
         hr = DI_OK;
     }
@@ -121,7 +136,8 @@ static HRESULT STDMETHODCALLTYPE hk_GetDeviceState(IDirectInputDevice8A* dev, DW
         auto m = static_cast<DIMOUSESTATE*>(data);
         m->lX += g_dx;
         m->lY += g_dy;
-        g_dx = g_dy = 0;
+        m->lZ += g_dz;
+        g_dx = g_dy = g_dz = 0;
         for (DWORD b = 0; b < 4; ++b) m->rgbButtons[b] |= g_buttons[b];
         if (size >= sizeof(DIMOUSESTATE2))
             for (DWORD b = 4; b < 8; ++b) static_cast<DIMOUSESTATE2*>(data)->rgbButtons[b] |= g_buttons[b];
@@ -136,7 +152,7 @@ static HRESULT STDMETHODCALLTYPE hk_GetDeviceData(IDirectInputDevice8A* dev, DWO
     if (!i || i->kind == Kind::other) return o_GetDeviceData(dev, obj_size, data, count, flags);
     DWORD want = count ? *count : 0;
     HRESULT hr;
-    if (ignore_real()) {
+    if (ignore_real_dev(i->kind)) {
         // Drain the real buffer so it never overflows, and report nothing from it.
         DWORD n = INFINITE;
         o_GetDeviceData(dev, obj_size, nullptr, &n, 0);

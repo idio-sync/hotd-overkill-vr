@@ -115,11 +115,12 @@ static BOOL WINAPI hk_GetClientRect(HWND hwnd, LPRECT r) {
 using GetCursorPos_t = BOOL(WINAPI*)(LPPOINT);
 static GetCursorPos_t o_GetCursorPos;
 static BOOL WINAPI hk_GetCursorPos(LPPOINT p) {
-    int x = g_cursor_x.load();
+    int x = g_cursor_x.load(), y = g_cursor_y.load();
     HWND hwnd = g_hwnd.load();
+    if (x < 0 && hwnd && input_owns_pointer()) x = g_client_w / 2, y = g_client_h / 2;  // VR: never the real mouse
     if (x >= 0 && hwnd) {
         p->x = x;
-        p->y = g_cursor_y.load();
+        p->y = y;
         ClientToScreen(hwnd, p);  // the game converts back with ScreenToClient
         return TRUE;
     }
@@ -141,6 +142,11 @@ void set_fake_cursor(int x, int y) {
     g_cursor_y = y;
     HWND hwnd = g_hwnd.load();
     if (hwnd && x >= 0) PostMessageA(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(x, y));
+}
+
+bool get_fake_cursor(int* x, int* y) {
+    *x = g_cursor_x.load(), *y = g_cursor_y.load();
+    return *x >= 0;
 }
 
 void post_mouse_button(bool right, bool down) {
