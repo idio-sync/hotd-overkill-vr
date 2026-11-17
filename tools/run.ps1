@@ -3,7 +3,8 @@
 param(
     [string]$Game = 'C:\Users\Virtual\hotd-vr-game',
     [switch]$Stop,
-    [switch]$Normal   # start with a normal window instead of minimized
+    [switch]$Normal,  # start with a normal window instead of minimized
+    [ValidateSet('', 'off', 'sim', 'openvr')] [string]$Mode = ''  # hovr.ini [vr] mode for this run (kept)
 )
 $ErrorActionPreference = 'Stop'
 $hovr = Join-Path $Game 'hovr'
@@ -44,6 +45,17 @@ if (-not (Test-Path $ini)) {
     Set-Content $ini "[probe]`r`nminimized=1`r`nmute=1`r`nwindowed=1`r`nfake_pad=1`r`ncap_fps=0`r`n" -Encoding ASCII
 }
 $minimized = (Get-Content $ini) -match '^minimized=1'
+
+# The mod's own settings: hovr\hovr.ini [vr] (see src/mod/config.cpp). -Mode sets its mode line.
+$vrIni = Join-Path $hovr 'hovr.ini'
+if (-not (Test-Path $vrIni)) { Set-Content $vrIni "[vr]`r`nmode=off`r`n" -Encoding ASCII }
+if ($Mode) {
+    $lines = @(Get-Content $vrIni | Where-Object { $_ -notmatch '^\s*mode\s*=' })
+    $i = [array]::IndexOf($lines, '[vr]')
+    if ($i -lt 0) { $lines = @('[vr]') + $lines; $i = 0 }
+    $rest = if ($i + 1 -lt $lines.Count) { $lines[($i + 1)..($lines.Count - 1)] } else { @() }
+    Set-Content $vrIni (@($lines[0..$i]) + "mode=$Mode" + @($rest)) -Encoding ASCII
+}
 Remove-Item (Join-Path $hovr 'status.txt'), (Join-Path $hovr 'cmd.txt') -ErrorAction SilentlyContinue
 Get-ChildItem $hovr -File | Where-Object Name -match '^(shot_\d+|frame_\d+)\.(png|txt)$' | Remove-Item
 

@@ -9,22 +9,34 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "HOTD_NG.exe is 32-bit: configure with vcvars32 (build.cmd).")
 endif()
 
-# The probe: a stand-in XINPUT1_3.dll that the game loads from its own folder.
-add_library(hovr_probe SHARED
-    src/probe/dllmain.cpp
-    src/probe/util.cpp
-    src/probe/folder.cpp
-    src/probe/window.cpp
-    src/probe/xinput.cpp
-    src/probe/shaders.cpp
-    src/probe/d3d.cpp
-    src/probe/control.cpp
-    src/probe/dinput.cpp
-    src/probe/gunhook.cpp
-    src/probe/files.cpp
-    src/probe/audio_mute.cpp
-    src/probe/png.cpp)
-set_target_properties(hovr_probe PROPERTIES OUTPUT_NAME XINPUT1_3)
-target_compile_definitions(hovr_probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
-target_compile_options(hovr_probe PRIVATE /W4 /wd4100 /utf-8)
-target_link_libraries(hovr_probe PRIVATE ole32 windowscodecs uuid dxguid)
+# The mod: a stand-in XINPUT1_3.dll that the game loads from its own folder (grown from the probe;
+# the development harness - save redirect, minimized/muted window, command file - lives in it too).
+add_library(hovr SHARED
+    src/mod/dllmain.cpp
+    src/mod/util.cpp
+    src/mod/config.cpp
+    src/mod/buildcheck.cpp
+    src/mod/folder.cpp
+    src/mod/window.cpp
+    src/mod/xinput.cpp
+    src/mod/shaders.cpp
+    src/mod/d3d.cpp
+    src/mod/stereo.cpp
+    src/mod/engine.cpp
+    src/mod/control.cpp
+    src/mod/dinput.cpp
+    src/mod/gunhook.cpp
+    src/mod/files.cpp
+    src/mod/audio_mute.cpp
+    src/mod/png.cpp
+    src/vr/stereo.cpp)
+set_target_properties(hovr PROPERTIES OUTPUT_NAME XINPUT1_3)
+target_compile_definitions(hovr PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+target_compile_options(hovr PRIVATE /W4 /wd4100 /utf-8)
+target_link_libraries(hovr PRIVATE ole32 windowscodecs uuid dxguid)
+
+# Unit tests for the VR math (no game needed): ctest --test-dir out
+enable_testing()
+add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp)
+target_compile_options(hovr_tests PRIVATE /W4 /utf-8)
+add_test(NAME stereo COMMAND hovr_tests)

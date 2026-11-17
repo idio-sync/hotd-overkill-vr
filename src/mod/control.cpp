@@ -14,13 +14,23 @@
 //   key NAME [MS]           key press (RETURN, ESCAPE, SPACE, UP..., F1..., A-Z, 0-9, or 0xNN)
 //   type TEXT               one key press per character
 //   shot [NAME]             back buffer PNG (hovr\NAME.png, default shot_N)
-//   frame                   log every call of the next frame to hovr\frame_N.txt
+//   frame [all]             log every call of the next frame to hovr\frame_N.txt (all: every
+//                           uploaded constant register, not just the first 12 of each upload)
 //   peek ADDR [N]           log N dwords (hex and float); ADDR = 0x..., va:0x..., exe+0x..., [ADDR]+0xOFF
 //   poke ADDR VALUE         write a dword (0x...) or float (1.5)
 //   aimdir X Y Z | off      replace the shot direction in FireBullets (world space)
 //   aimdir capture          the next shot's direction becomes the override for the shots after it
 //   aimorigin X Y Z | off   replace the shot origin
 //   log TEXT                write TEXT to the log
+//   vr yaw D | vr pitch D   simulated head yaw (+ right) / pitch (+ up), degrees
+//   vr ipd M | vr unit M    eye separation in metres / metres per game unit
+//   vr cone D               head-turn range that culling covers, degrees
+//   vr mode off|sim         stop/start drawing both eyes (target sizes are fixed at start-up by
+//                           hovr.ini [vr] mode; started with mode=off, `vr mode sim` does nothing)
+//   vr scene [NAME]         PNG of the stereo scene target at full size (hovr\NAME.png)
+//   vr targets              PNGs of every resized colour target (hovr\rtN_WxH.png, alpha in _a.png)
+//   vr check                compare the engine's projection*view with the draws' matrices
+//   vr                      log the current VR settings
 #include "common.h"
 
 #include <cstdio>
@@ -77,12 +87,6 @@ static UINT parse_key(const std::string& s) {
     if (s.size() == 1) return UINT(toupper(uint8_t(s[0])));
     logf("unknown key %s", s.c_str());
     return 0;
-}
-
-static bool readable(uintptr_t addr) {
-    MEMORY_BASIC_INFORMATION mbi{};
-    return VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
-           !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
 }
 
 // ADDR: 0x... (absolute), va:0x... (image VA at base 0x400000, rebased), exe+0x... (RVA),
@@ -235,7 +239,34 @@ FrameRequests control_tick() {
             req.shot = true;
             req.shot_name = name.empty() ? "shot_" + std::to_string(++g_shot_no) : name;
         } else if (cmd == "frame") {
+            std::string a;
+            ss >> a;
             req.log_frame = true;
+            req.log_frame_all = a == "all";
+        } else if (cmd == "vr") {
+            std::string what, a;
+            ss >> what >> a;
+            float v = strtof(a.c_str(), nullptr);
+            if (what == "yaw") g_vr.sim_yaw_deg = v;
+            else if (what == "pitch") g_vr.sim_pitch_deg = v;
+            else if (what == "ipd") g_vr.ipd_m = v;
+            else if (what == "unit" && v > 0) g_vr.unit_m = v;
+            else if (what == "cone") g_vr.cone_deg = v;
+            else if (what == "mode") {
+                if (g_vr.mode == VrMode::off) logf("vr mode: started with mode=off (single-size targets); unchanged");
+                else g_vr.stereo = a != "off";
+            } else if (what == "scene") {
+                req.scene_shot = true;
+                req.scene_name = a.empty() ? "scene_" + std::to_string(++g_shot_no) : a;
+            } else if (what == "check") {
+                req.check = true;
+            } else if (what == "targets") {
+                req.dump_targets = true;
+            } else if (!what.empty()) {
+                logf("unknown vr command: %s", line.c_str());
+            }
+            logf("vr: mode=%s stereo=%d yaw=%.1f pitch=%.1f ipd_m=%.4f unit_m=%.4f cone_deg=%.1f", mode_name(g_vr.mode),
+                 int(g_vr.stereo), g_vr.sim_yaw_deg, g_vr.sim_pitch_deg, g_vr.ipd_m, g_vr.unit_m, g_vr.cone_deg);
         } else if (cmd == "peek") {
             std::string a;
             int n = 4;
@@ -286,7 +317,7 @@ FrameRequests control_tick() {
         } else {
             logf("unknown command: %s", line.c_str());
         }
-        if (req.shot || req.log_frame) break;  // one capture per frame
+        if (req.shot || req.log_frame || req.scene_shot || req.check || req.dump_targets) break;  // one capture per frame
     }
     return req;
 }

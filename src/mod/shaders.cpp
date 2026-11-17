@@ -108,6 +108,19 @@ void shader_created(void* shader, const DWORD* code, bool vertex) {
     info.vertex = vertex;
     info.hash = fnv64(code, size);
     info.consts = parse_ctab(code, size);
+    if (vertex) {
+        // Stereo: the matrices that take positions to clip space, and the camera position.
+        for (auto& c : info.consts) {
+            if (c.set != 2) continue;
+            if (c.count >= 4 && info.n_clip < 4 &&
+                (c.name == "cWVP" || c.name == "cProject" || c.name == "cObjectViewProject" || c.name == "cProj"))
+                info.clip_regs[info.n_clip++] = c.index;
+            else if (c.name == "eyePos")
+                info.eye_reg = c.index;
+            else if (c.name == "cObjectMatrix")
+                info.object_reg = c.index;
+        }
+    }
     uint64_t source = 0;
     bool first;
     {

@@ -1,8 +1,9 @@
-// Paths, log, import/vtable patching.
+// Paths, log, import/vtable patching, inline detours.
 #include "common.h"
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 namespace hv {
@@ -45,6 +46,35 @@ void logf(const char* fmt, ...) {
 }
 
 uintptr_t exe_base() { return reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)); }
+
+bool readable(uintptr_t addr) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    return addr && VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
+           !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+}
+
+void* install_detour(uintptr_t image_va, const uint8_t* expect, size_t n, void* hook, const char* name) {
+    auto target = reinterpret_cast<uint8_t*>(va(image_va));
+    if (n < 5 || n > 16 || memcmp(target, expect, n) != 0) {
+        logf("detour %s: unexpected bytes at %p (%02x %02x %02x %02x %02x); not installed", name, target, target[0], target[1],
+             target[2], target[3], target[4]);
+        return nullptr;
+    }
+    auto tramp = static_cast<uint8_t*>(VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!tramp) return nullptr;
+    memcpy(tramp, target, n);
+    tramp[n] = 0xE9;
+    *reinterpret_cast<int32_t*>(tramp + n + 1) = int32_t((target + n) - (tramp + n + 5));
+    DWORD old;
+    VirtualProtect(target, n, PAGE_EXECUTE_READWRITE, &old);
+    target[0] = 0xE9;
+    *reinterpret_cast<int32_t*>(target + 1) = int32_t(static_cast<uint8_t*>(hook) - (target + 5));
+    for (size_t i = 5; i < n; ++i) target[i] = 0x90;
+    VirtualProtect(target, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, n);
+    logf("detour %s installed at %p (trampoline %p)", name, target, tramp);
+    return tramp;
+}
 
 uint64_t fnv64(const void* data, size_t size) {
     uint64_t h = 1469598103934665603ull;
