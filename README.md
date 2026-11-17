@@ -104,7 +104,8 @@ screenshot). The full list is at the top of `src/mod/control.cpp`. VR ones:
   `vr mode off|sim` (stereo on/off live), `vr scene NAME`, `vr targets`, `vr check`.
 - Sim gun: `vr hand YAW PITCH`, `vr handpos X Y Z` (relative to the head), `vr handat X Y` (point
   the hand at what the camera sees through cursor X, Y), `vr handscreen X Y` (point it at back-buffer
-  pixel X, Y of the flat screen), `vr hand off`; sim buttons `vr btn trigger|a|b|grip|stick|off.b [MS]`,
+  pixel X, Y of the flat screen), `vr handseek` (point it at the zombie nearest the view's centre),
+  `vr hand off`; sim buttons `vr btn trigger|a|b|grip|stick|off.b [MS]`,
   `vr hold NAME`, `vr release NAME|all`. `vr gun` logs the weapon, ammo and the aim; `vr marker`,
   `vr aim`, `vr gesture` switch those settings live; `vr god 1` keeps player 1 alive for tests;
   `vr actions 1` logs the game's input actions as they change.
