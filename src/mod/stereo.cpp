@@ -121,8 +121,12 @@ static Kind kind_of(UINT w, UINT h, bool depth) {
     if (!depth)
         for (auto& s : colour)
             if (s[0] == w && s[1] == h) return kScene;  // the scene's post-processing chain
-    // The composite target: as tall as the back buffer, narrower, wider than tall (1291x807).
+    // The composite target: as tall as the back buffer, narrower, wider than tall (1291x807 for a
+    // 1536x807 back buffer); or, seen with a 1920x1200 back buffer, a smaller 16:10 one
+    // (1680x1050): 16:10 within a few pixels, narrower than the back buffer (not the back buffer's
+    // own 1920x1200 depth surface).
     if (h == g_bb_h && w < g_bb_w && w > h) return kComposite;
+    if (h >= 400 && w < g_bb_w && h <= g_bb_h && std::abs(int(w) * 10 - int(h) * 16) <= 24) return kComposite;
     return kOther;
 }
 

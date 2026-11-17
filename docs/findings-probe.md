@@ -232,3 +232,12 @@ findings-static.md. Everything below was observed in the running game unless mar
   perspective: already right in stereo) - there is no first-person muzzle flash in this PC build
   (it would have belonged to the never-drawn GunArms rig). The screen-space sprites seen in some
   frames are the "player hurt" blood on the screen. Nothing to move or hide.
+- **Composite target at other resolutions**: with a 1920x1200 back buffer (console session) the
+  game's composite target is 1680x1050 - 16:10 but not as tall as the back buffer - so milestone
+  1's rule missed it and the HUD stayed in the left eye. kind_of() now also takes a 16:10 colour or
+  depth target narrower than the back buffer. Checked: HUD panel and eyes handed off at 3360x1050.
+- **Sim checks (2026-11-17)**: magnum and SMG (bought in the test save's gun shop) drawn in both
+  eyes, textured, from aim/back/right/left/top/bottom/front views; the barrel line ends on the
+  marker in both eyes for both; magazines drop and return on reload; switching weapons switches
+  the model; quitting a level releases the models (`gun model: level ended, 2 weapon model(s)
+  released`); mode=off draws nothing. Other weapons were measured from their meshes only.
