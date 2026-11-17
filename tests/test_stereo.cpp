@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include "../src/vr/stereo.h"
+#include "../src/vr/xform.h"
 
 using namespace hv::vr;
 
@@ -177,7 +178,136 @@ static void test_rigid_inverse() {
     CHECK(max_abs_diff(mul(a, rigid_inverse(a)), identity()) < 1e-5f);
 }
 
+// --- OpenVR <-> game camera (xform.h) ---
+
+static Mat4 ry_rh(float a) {  // right-handed rotation about +y by a (a > 0: forward -z turns towards -x)
+    Mat4 r = identity();
+    const float c = std::cos(a), s = std::sin(a);
+    r.m[0][0] = c, r.m[0][2] = s, r.m[2][0] = -s, r.m[2][2] = c;
+    return r;
+}
+static Mat4 rx_rh(float a) {  // a > 0: forward -z turns towards +y (looking up)
+    Mat4 r = identity();
+    const float c = std::cos(a), s = std::sin(a);
+    r.m[1][1] = c, r.m[1][2] = -s, r.m[2][1] = s, r.m[2][2] = c;
+    return r;
+}
+
+static void test_flip_z_conversions() {
+    const float a = 25 * kPi / 180;
+    // flip_z is its own inverse.
+    Mat4 p = mul(translation(0.1f, -0.2f, 0.3f), mul(ry_rh(0.4f), rx_rh(-0.2f)));
+    CHECK(max_abs_diff(flip_z(flip_z(p)), p) < 1e-6f);
+    // OpenVR head turned right (forward -z -> +x) = the game camera's yaw right (+z -> +x).
+    Mat4 right = ry_rh(-a);
+    Vec4 fwd = apply(right, {0, 0, -1, 0});
+    CHECK(fwd.x > 0);
+    CHECK(max_abs_diff(head_in_game(identity(), right), rotation_yaw_pitch(a, 0)) < 1e-6f);
+    // Looking up.
+    CHECK(max_abs_diff(head_in_game(identity(), rx_rh(a)), rotation_yaw_pitch(0, a)) < 1e-6f);
+    // Leaning forward 10 cm in the room (-z) = +z in the game camera's space; right and up stay.
+    Mat4 lean = head_in_game(identity(), translation(0.05f, 0.02f, -0.1f));
+    CHECK_NEAR(lean.m[0][3], 0.05, 1e-6);
+    CHECK_NEAR(lean.m[1][3], 0.02, 1e-6);
+    CHECK_NEAR(lean.m[2][3], 0.1, 1e-6);
+    // Relative to an anchor: the anchor itself is the identity, whatever its yaw and position.
+    Mat4 anchor = mul(translation(1, 1.2f, -0.5f), ry_rh(2.0f));
+    CHECK(max_abs_diff(head_in_game(anchor, anchor), identity()) < 1e-5f);
+    // A head turned 25 degrees right of the anchor's heading is a 25-degree yaw in the game.
+    CHECK(max_abs_diff(head_in_game(anchor, mul(anchor, right)), rotation_yaw_pitch(a, 0)) < 1e-5f);
+    // Eye-to-head: the left eye 3.2 cm to the left stays to the left.
+    Mat4 eye = eye_in_game(identity(), translation(-0.032f, 0, 0.01f));
+    CHECK_NEAR(eye.m[0][3], -0.032, 1e-7);
+    CHECK_NEAR(eye.m[2][3], -0.01, 1e-7);  // 1 cm behind the head's centre (OpenVR +z = backwards)
+    // rows34 round trip.
+    float rows[3][4];
+    to_rows34(p, rows);
+    CHECK(max_abs_diff(from_rows34(rows), p) < 1e-7f);
+}
+
+static void test_yaw_only_anchor() {
+    const float yaw = 0.9f, pitch = 0.35f;
+    Mat4 head = mul(translation(0.2f, 1.1f, 0.3f), mul(ry_rh(yaw), rx_rh(pitch)));
+    Mat4 a = yaw_only_rh(head);
+    Mat4 expect = mul(translation(0.2f, 1.1f, 0.3f), ry_rh(yaw));
+    CHECK(max_abs_diff(a, expect) < 1e-5f);
+    // Recentred there, the head keeps its pitch only.
+    CHECK(max_abs_diff(head_in_game(a, head), rotation_yaw_pitch(0, pitch)) < 1e-5f);
+}
+
+// OpenVR's own projection from raw tangents (openvr_api ComputeProjection; GetProjectionRaw's
+// "top" is the lower edge in y-up terms).
+static void openvr_matrix(float l, float r, float t, float b, float out[4][4]) {
+    const float n = 0.1f, f = 100, idx = 1 / (r - l), idy = 1 / (b - t), idz = 1 / (f - n);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) out[i][j] = 0;
+    out[0][0] = 2 * idx, out[0][2] = (r + l) * idx;
+    out[1][1] = 2 * idy, out[1][2] = (b + t) * idy;
+    out[2][2] = -f * idz, out[2][3] = -f * n * idz;
+    out[3][2] = -1;
+}
+
+static void test_tangents_from_openvr() {
+    float p[4][4], t[4];
+    openvr_matrix(-1.25f, 1.05f, -1.1f, 1.3f, p);
+    CHECK(tangents_from_openvr(p, t));
+    CHECK_NEAR(t[0], -1.25, 1e-5);
+    CHECK_NEAR(t[1], 1.05, 1e-5);
+    // In y-up terms the image's lower edge is GetProjectionRaw's "top" and the upper edge its "bottom".
+    CHECK_NEAR(t[2], -1.1, 1e-5);
+    CHECK_NEAR(t[3], 1.3, 1e-5);
+    // A direction on the upper edge lands on the top of the image (ndc y = +1) through OpenVR's matrix...
+    const float dir[4] = {0, 1.3f, -1, 0};
+    float cy = 0, cw = 0;
+    for (int k = 0; k < 4; ++k) cy += p[1][k] * dir[k], cw += p[3][k] * dir[k];
+    CHECK_NEAR(cy / cw, 1, 1e-5);
+    // ... and through the game-convention projection built from the tangents.
+    Vec4 c = apply(proj_matrix(proj_from_tangents(t[0], t[1], t[2], t[3], 1, -5)), {0, 1.3f, 1, 1});
+    CHECK_NEAR(c.y / c.w, 1, 1e-5);
+    // Not a perspective matrix.
+    float o[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+    CHECK(!tangents_from_openvr(o, t));
+}
+
+static void test_panel_projection() {
+    const Proj eye = proj_from_tangents(-1, 1, -1, 1, 1, -5);
+    const Mat4 pose = panel_pose(identity(), 1.5f, 0);
+    float c[4][3];
+    CHECK(project_panel(identity(), pose, 1.6f, 1.0f, eye, c));
+    // Top-left, top-right, bottom-right, bottom-left; 1.5 m away.
+    CHECK_NEAR(c[0][0] / c[0][2], -0.8 / 1.5, 1e-5);
+    CHECK_NEAR(c[0][1] / c[0][2], 0.5 / 1.5, 1e-5);
+    CHECK_NEAR(c[2][0] / c[2][2], 0.8 / 1.5, 1e-5);
+    CHECK_NEAR(c[2][1] / c[2][2], -0.5 / 1.5, 1e-5);
+    CHECK_NEAR(c[0][2], 1.5, 1e-5);
+    // Dropped 0.2 m: the centre is below the middle.
+    float d[4][3];
+    project_panel(identity(), panel_pose(identity(), 1.5f, 0.2f), 1.6f, 1.0f, eye, d);
+    CHECK_NEAR((d[0][1] / d[0][2] + d[3][1] / d[3][2]) / 2, -0.2 / 1.5, 1e-5);
+    // Head turned right: the world-locked panel moves left.
+    float y[4][3];
+    project_panel(ry_rh(-0.3f), pose, 1.6f, 1.0f, eye, y);
+    CHECK((y[0][0] / y[0][2] + y[1][0] / y[1][2]) / 2 < -0.1f);
+    // Left eye (3.2 cm left): the panel appears shifted right, the right eye the opposite.
+    float l[4][3], r[4][3];
+    project_panel(translation(-0.032f, 0, 0), pose, 1.6f, 1.0f, eye, l);
+    project_panel(translation(0.032f, 0, 0), pose, 1.6f, 1.0f, eye, r);
+    CHECK_NEAR(l[0][0] / l[0][2] - c[0][0] / c[0][2], 0.032 / 1.5, 1e-5);
+    CHECK_NEAR(r[0][0] / r[0][2] - c[0][0] / c[0][2], -0.032 / 1.5, 1e-5);
+    // Behind the head: not drawable.
+    CHECK(!project_panel(ry_rh(kPi), pose, 1.6f, 1.0f, eye, y));
+    // The anchor carries the panel: an anchor turned 90 degrees left puts it on the left.
+    Mat4 left_anchor = ry_rh(kPi / 2);
+    Mat4 lp = panel_pose(left_anchor, 1.5f, 0);
+    CHECK_NEAR(lp.m[0][3], -1.5, 1e-5);
+    CHECK_NEAR(lp.m[2][3], 0, 1e-5);
+}
+
 int main() {
+    test_flip_z_conversions();
+    test_yaw_only_anchor();
+    test_tangents_from_openvr();
+    test_panel_projection();
     test_from_d3dx_is_transpose();
     test_game_projection_round_trip();
     test_identity_when_eye_is_game_camera();
@@ -191,6 +321,6 @@ int main() {
         std::printf("%d failure(s)\n", g_failures);
         return 1;
     }
-    std::printf("all stereo tests passed\n");
+    std::printf("all stereo and xform tests passed\n");
     return 0;
 }

@@ -29,14 +29,28 @@ add_library(hovr SHARED
     src/mod/files.cpp
     src/mod/audio_mute.cpp
     src/mod/png.cpp
-    src/vr/stereo.cpp)
+    src/mod/handoff.cpp
+    src/mod/d3d9ex.cpp
+    src/mod/gamestate.cpp
+    src/mod/mirror.cpp
+    src/mod/vrsys.cpp
+    src/vr/stereo.cpp
+    src/vr/xform.cpp)
 set_target_properties(hovr PROPERTIES OUTPUT_NAME XINPUT1_3)
 target_compile_definitions(hovr PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(hovr PRIVATE /W4 /wd4100 /utf-8)
-target_link_libraries(hovr PRIVATE ole32 windowscodecs uuid dxguid)
+target_link_libraries(hovr PRIVATE ole32 windowscodecs uuid dxguid d3d11 dxgi)
+# OpenVR (32-bit 2.15.6, copied from k7-vr), delay-loaded: openvr_api.dll is only loaded when
+# [vr] mode=openvr.
+target_include_directories(hovr PRIVATE third_party/openvr/headers)
+target_link_libraries(hovr PRIVATE ${CMAKE_SOURCE_DIR}/third_party/openvr/lib/win32/openvr_api.lib delayimp)
+target_link_options(hovr PRIVATE /DELAYLOAD:openvr_api.dll)
+add_custom_command(TARGET hovr POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/third_party/openvr/bin/win32/openvr_api.dll $<TARGET_FILE_DIR:hovr>)
 
 # Unit tests for the VR math (no game needed): ctest --test-dir out
 enable_testing()
-add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp)
+add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp)
 target_compile_options(hovr_tests PRIVATE /W4 /utf-8)
 add_test(NAME stereo COMMAND hovr_tests)

@@ -1,19 +1,36 @@
 // Same-frame stereo by per-draw duplication (design: "Rendering").
 //
-// Screen-sized render targets (the 1280x720 scene target and its depth, the bloom/blur chain
-// 640x180, 320x180, 160x90, 640x360, and the 1291x807 composite target with its depth) are created
-// double-wide at eye resolution: width x 2*eye_w/1280, height x eye_h/720. Shadow maps and other
-// targets keep their size. The game keeps thinking in its own sizes: viewports, scissor rects and
-// rects it passes for those targets are scaled, and GetViewport/GetScissorRect answer in its sizes.
+// Screen-sized render targets are created double-wide at eye resolution (width x 2*eye_w/1280,
+// height x eye_h/720): the 1280x720 scene target and its depth, the bloom/blur chain (640x180,
+// 320x180, 160x90, 640x360) and the composite target with its depth. The composite target's size
+// follows the window (1291x807 for a 1536x807 back buffer): it is the colour/depth target whose
+// height is the back buffer's and whose width is smaller (and wider than tall). Shadow maps and
+// other targets keep their size. The game keeps thinking in its own sizes: viewports, scissor
+// rects and rects it passes for those targets are scaled, and GetViewport/GetScissorRect answer in
+// its sizes.
 //
-// On the scene target (1280x720 class), every draw whose clip-space matrix is a perspective one is
-// issued twice: the left eye into the left half, the right eye into the right half, each with
-// cWVP_eye = C_eye * cWVP (C_eye = P_eye * E_eye * P_game^-1, src/vr/stereo.h) for each clip
-// matrix the shader declares (cWVP, cProject, cObjectViewProject, cProj) and eyePos moved to the
-// eye. Everything else (full-screen passes, orthographic draws, other targets) is drawn once over
-// the whole double-wide target. P_game and the view come from the engine's globals at draw time:
-// projection 0x9C7DC0 and view 0x9C7E48 (D3DX row-vector matrices); `vr check` compares them
-// with cWVP * cObjectMatrix^-1 of the draws.
+// Frames are either stereo (gameplay: gamestate.cpp says in a level, no cutscene, not paused, and
+// the scene is drawn) or flat (everything else), decided at each Present for the next frame:
+//
+// Stereo frames: on the scene target (1280x720 class), every draw whose clip-space matrix is a
+// perspective one is issued twice: the left eye into the left half, the right eye into the right
+// half, each with cWVP_eye = C_eye * cWVP (C_eye = P_eye * E_eye * P_game^-1, src/vr/stereo.h) for
+// each clip matrix the shader declares (cWVP, cProject, cObjectViewProject, cProj) and eyePos moved
+// to the eye. Everything else (full-screen passes, orthographic draws, other targets) is drawn once
+// over the whole double-wide target. P_game and the view come from the engine's globals at draw
+// time: projection 0x9C7DC0 and view 0x9C7E48 (D3DX row-vector matrices); `vr check` compares them
+// with cWVP * cObjectMatrix^-1 of the draws. Eye poses and projections come from vrsys.cpp.
+//   The composite draw (pixel shader 8cf0f75e1213637b) turns the post-processed scene into the
+// composite target; right after it, the composite target holds both eyes (copied to the shared
+// eye texture), and everything the game then draws "on the composite target" - the HUD: 2D
+// sprites and the 3D ammo rounds - goes to our own HUD texture at the game's mono size instead,
+// with its own depth buffer, cleared to transparent black. Its alpha is forced to accumulate
+// coverage (separate alpha blend ONE, INVSRCALPHA) so the HUD texture is premultiplied. The
+// game's crosshair (sprites centred on player 1's cursor) is skipped unless crosshair=1.
+//
+// Flat frames: nothing is duplicated; every draw goes over the whole double-wide targets, so the
+// game's own frame comes out in the back buffer as usual (the scene supersampled horizontally).
+// At Present the part of the back buffer the game drew is copied to the flat-screen texture.
 #include "common.h"
 
 #include <cmath>
@@ -27,73 +44,122 @@
 namespace hv {
 
 constexpr uintptr_t kProjVa = 0x9C7DC0, kViewVa = 0x9C7E48;
+constexpr uintptr_t kGameControl = 0x99B708;  // cGameControl; +0x24 = player 1 (cPlayer)
+constexpr uint64_t kCompositePs = 0x8cf0f75e1213637bull;
 constexpr float kPi = 3.14159265f;
+
+enum Kind { kOther, kScene, kComposite };
 
 struct Target {
     UINT ow, oh;  // the game's size
     UINT w, h;    // the real size
+    Kind kind;
 };
 
 static std::mutex g_mx;
 static std::unordered_map<IDirect3DSurface9*, Target> g_targets;
+static UINT g_bb_w = 1536, g_bb_h = 807;
 
-// Render target 0.
+// Render target 0 (as really set) and the game's depth surface.
 static IDirect3DSurface9* g_rt;
 static Target g_rt_info;
 static bool g_rt_resized, g_rt_scene;
 static IDirect3DSurface9* g_scene_surface;
+static IDirect3DSurface9* g_game_depth;
 
 static D3DVIEWPORT9 g_game_vp;
 static RECT g_game_scissor;
 static bool g_scissor_on;
 
+// Frame mode.
+static bool g_frame_stereo;      // this frame is drawn in stereo
+static int g_frames_since_scene = 1 << 20;
+static bool g_level_was;
+static bool g_recentre_pending;
+static GameState g_state;
+
+// HUD redirection and the hand-off textures.
+// The HUD is drawn into a private target (g_hudrt, also what the desktop mirror shows) and copied
+// once per frame into the shared one, so D3D11 never reads a texture the game is still drawing.
+static SharedTex g_eyetex{"eyes"}, g_hud{"hud"}, g_hudrt{"hud draw"}, g_screen{"screen"};
+static IDirect3DSurface9* g_hud_depth;
+static UINT g_hud_depth_w, g_hud_depth_h;
+static IDirect3DSurface9* g_bb_resolve;  // non-multisampled copy of the back buffer (flat frames)
+static IDirect3DDevice9* g_hud_dev;
+static bool g_hud_active, g_hud_drawn;
+static IDirect3DSurface9* g_comp_rt;
+static IDirect3DSurface9* g_comp_depth;
+static UINT g_comp_ow, g_comp_oh;  // the composite target's game size
+static DWORD g_game_rs[4] = {FALSE, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLENDOP_ADD};  // separate alpha states as the game set them
+static DWORD g_game_blend[2] = {D3DBLEND_ONE, D3DBLEND_ZERO};  // SRCBLEND, DESTBLEND as the game set them
+static DWORD g_hud_alpha_dest = ~0u;  // DESTBLENDALPHA as we last set it during the HUD
+static int g_crosshair_skips, g_last_crosshair_skips;
+static RECT g_bb_rect;  // what the game drew on the back buffer this frame
+static bool g_bb_drawn;
+static RECT g_bb_comp_rect;  // where the game drew the composite target into the back buffer
+static bool g_bb_comp;
+static ID3D11Texture2D* g_own11[3];  // D3D11 copies: eyes, hud, screen
+
 // Per-frame stats.
 static int g_stereo_draws, g_scene_mono_draws, g_overlay_draws, g_last_stereo, g_last_mono, g_last_overlay;
-static char g_status[128];
+static int g_scene_persp;  // perspective draws on the scene target (stereo or not)
+static int g_frames_stereo, g_frames_flat;
+
+static char g_status[256];
 static std::unordered_map<void*, bool> g_target_textures;
 static bool g_check_requested, g_checking;
 
-static bool screen_sized(UINT w, UINT h, bool depth) {
-    static const UINT colour[][2] = {{1280, 720}, {640, 180}, {320, 180}, {160, 90}, {640, 360}, {1291, 807}};
-    static const UINT depths[][2] = {{1280, 720}, {1291, 807}};
-    if (depth) {
-        for (auto& s : depths)
-            if (s[0] == w && s[1] == h) return true;
-        return false;
-    }
-    for (auto& s : colour)
-        if (s[0] == w && s[1] == h) return true;
-    return false;
+void stereo_set_backbuffer(UINT w, UINT h) {
+    if (w && h) g_bb_w = w, g_bb_h = h;
+}
+
+static Kind kind_of(UINT w, UINT h, bool depth) {
+    static const UINT colour[][2] = {{1280, 720}, {640, 180}, {320, 180}, {160, 90}, {640, 360}};
+    if (w == 1280 && h == 720) return kScene;
+    if (!depth)
+        for (auto& s : colour)
+            if (s[0] == w && s[1] == h) return kScene;  // the scene's post-processing chain
+    // The composite target: as tall as the back buffer, narrower, wider than tall (1291x807).
+    if (h == g_bb_h && w < g_bb_w && w > h) return kComposite;
+    return kOther;
 }
 
 bool stereo_target_size(UINT w, UINT h, bool depth, UINT* out_w, UINT* out_h) {
-    if (g_vr.mode == VrMode::off || !screen_sized(w, h, depth)) return false;
+    if (g_vr.mode == VrMode::off || kind_of(w, h, depth) == kOther) return false;
     *out_w = UINT(std::lround(double(w) * 2.0 * g_vr.eye_w / 1280.0));
     *out_h = UINT(std::lround(double(h) * g_vr.eye_h / 720.0));
     return true;
 }
 
-static void track(IDirect3DSurface9* s, UINT w, UINT h) {
+static void track(IDirect3DSurface9* s, UINT w, UINT h, bool depth) {
     D3DSURFACE_DESC d{};
     s->GetDesc(&d);
+    const Kind k = kind_of(w, h, depth);
     std::lock_guard lock(g_mx);
-    g_targets[s] = {w, h, d.Width, d.Height};
-    logf("stereo target %p: %ux%u -> %ux%u", s, w, h, d.Width, d.Height);
+    g_targets[s] = {w, h, d.Width, d.Height, k};
+    if (k == kComposite && !depth) g_comp_ow = w, g_comp_oh = h;
+    logf("stereo target %p: %ux%u -> %ux%u%s", s, w, h, d.Width, d.Height, k == kComposite ? " (composite)" : "");
 }
 
 void stereo_track_texture(IDirect3DTexture9* tex, UINT w, UINT h) {
     IDirect3DSurface9* s = nullptr;
+    D3DSURFACE_DESC d{};
+    tex->GetLevelDesc(0, &d);
     {
         std::lock_guard lock(g_mx);
         g_target_textures[tex] = true;
     }
     if (SUCCEEDED(tex->GetSurfaceLevel(0, &s)) && s) {
-        track(s, w, h);
+        track(s, w, h, (d.Usage & D3DUSAGE_DEPTHSTENCIL) != 0);
         s->Release();  // the texture keeps its level alive; the pointer stays the same
     }
 }
 
-void stereo_track_surface(IDirect3DSurface9* s, UINT w, UINT h) { track(s, w, h); }
+void stereo_track_surface(IDirect3DSurface9* s, UINT w, UINT h) {
+    D3DSURFACE_DESC d{};
+    s->GetDesc(&d);
+    track(s, w, h, (d.Usage & D3DUSAGE_DEPTHSTENCIL) != 0);
+}
 
 // A tracked surface, checked against its real size (a freed surface's address can be reused).
 static bool lookup(IDirect3DSurface9* s, Target* out) {
@@ -126,6 +192,7 @@ void stereo_set_rt(IDirect3DSurface9* s) {
     g_game_scissor = {0, 0, LONG(w), LONG(h)};
 }
 
+void stereo_note_depth(IDirect3DSurface9* s) { g_game_depth = s; }
 bool stereo_rt_resized() { return g_rt_resized; }
 
 std::vector<IDirect3DSurface9*> stereo_targets() {
@@ -201,27 +268,24 @@ void stereo_scissor_enable(bool on) { g_scissor_on = on; }
 
 struct Eyes {
     float proj_raw[16], view_raw[16];
-    float yaw, pitch, ipd, unit;
-    int eye_w, eye_h;
+    unsigned frame;
     bool valid;
     vr::Mat4 p_game, view;  // column form
     vr::Mat4 c[2];
+    vr::Proj pe[2];
     float world_off[2][3];
 };
 static Eyes g_eyes;
+static unsigned g_frame_no = 1;
 
 static bool update_eyes() {
     const float* p = reinterpret_cast<const float*>(va(kProjVa));
     const float* v = reinterpret_cast<const float*>(va(kViewVa));
     Eyes& e = g_eyes;
-    if (e.valid && !memcmp(e.proj_raw, p, 64) && !memcmp(e.view_raw, v, 64) && e.yaw == g_vr.sim_yaw_deg &&
-        e.pitch == g_vr.sim_pitch_deg && e.ipd == g_vr.ipd_m && e.unit == g_vr.unit_m && e.eye_w == g_vr.eye_w &&
-        e.eye_h == g_vr.eye_h)
-        return true;
+    if (e.valid && e.frame == g_frame_no && !memcmp(e.proj_raw, p, 64) && !memcmp(e.view_raw, v, 64)) return true;
     memcpy(e.proj_raw, p, 64);
     memcpy(e.view_raw, v, 64);
-    e.yaw = g_vr.sim_yaw_deg, e.pitch = g_vr.sim_pitch_deg, e.ipd = g_vr.ipd_m, e.unit = g_vr.unit_m;
-    e.eye_w = g_vr.eye_w, e.eye_h = g_vr.eye_h;
+    e.frame = g_frame_no;
     e.valid = false;
     e.p_game = vr::from_d3dx(p);
     e.view = vr::from_d3dx(v);
@@ -231,11 +295,12 @@ static bool update_eyes() {
         if (warned++ < 5) logf("stereo: engine projection is not a perspective one; drawing mono");
         return false;
     }
-    const vr::Proj pe = vr::sim_eye_proj(pg, float(g_vr.eye_w) / float(g_vr.eye_h));
-    const vr::Mat4 head = vr::rotation_yaw_pitch(g_vr.sim_yaw_deg * kPi / 180, g_vr.sim_pitch_deg * kPi / 180);
     for (int i = 0; i < 2; ++i) {
-        const vr::Mat4 pose = vr::eye_pose(head, g_vr.ipd_m, i);
-        if (!vr::correction(e.p_game, pe, vr::eye_view(pose, g_vr.unit_m), &e.c[i])) return false;
+        vr::Mat4 pose;
+        float t[4];
+        if (vrsys_eye(i, &pose, t)) e.pe[i] = vr::proj_from_tangents(t[0], t[1], t[2], t[3], pg.a, pg.b);
+        else e.pe[i] = vr::sim_eye_proj(pg, float(g_vr.eye_w) / float(g_vr.eye_h));
+        if (!vr::correction(e.p_game, e.pe[i], vr::eye_view(pose, g_vr.unit_m), &e.c[i])) return false;
         float off[3];
         vr::eye_offset_units(pose, g_vr.unit_m, off);
         for (int k = 0; k < 3; ++k)
@@ -243,6 +308,29 @@ static bool update_eyes() {
     }
     e.valid = true;
     return true;
+}
+
+bool stereo_eye_proj(int eye, vr::Proj* out) {
+    if (!g_eyes.valid) return false;
+    *out = g_eyes.pe[eye & 1];
+    return true;
+}
+
+void stereo_eye_half_angles(float game_hx, float game_hy, float* hx, float* hy) {
+    if (!g_eyes.valid) {  // before the first stereo frame: the sim eye (the game's vertical FOV)
+        *hy = game_hy;
+        *hx = std::fmax(game_hx, std::atan(std::tan(game_hy) * float(g_vr.eye_w) / float(g_vr.eye_h)));
+        return;
+    }
+    float mx = 0, my = 0;
+    for (const vr::Proj& p : g_eyes.pe) {
+        float t[4];
+        vr::proj_tangents(p, t);
+        mx = std::fmax(mx, std::fmax(-t[0], t[1]));
+        my = std::fmax(my, std::fmax(-t[2], t[3]));
+    }
+    *hx = std::atan(mx);
+    *hy = std::atan(my);
 }
 
 static vr::Mat4 load(int reg) {
@@ -262,9 +350,6 @@ static void check_draw(const ShaderInfo* info) {
     if (!vr::invert(w, &wi)) return;
     const vr::Mat4 vp = vr::mul(load(0), wi);
     const vr::Mat4 pv = vr::mul(g_eyes.p_game, g_eyes.view);
-    float scale = 0;
-    for (auto& r : pv.m)
-        for (float x : r) scale = std::fmax(scale, std::fabs(x));
     // Translation terms are in game units (thousands): compare the rotation/scale part and the
     // translation column separately, relative to their size.
     float rot = 0, tr = 0, trs = 1;
@@ -295,8 +380,165 @@ static bool reads_target() {
     return false;
 }
 
-HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx) {
-    if (!g_vr.stereo || !g_rt_scene) return draw(ctx);
+// --- HUD redirection ---
+
+SIZE stereo_hud_size() { return {LONG(g_hud.w ? g_hud.w : 1291), LONG(g_hud.h ? g_hud.h : 807)}; }
+
+static const D3DRENDERSTATETYPE kSepAlpha[4] = {D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLENDALPHA, D3DRS_DESTBLENDALPHA,
+                                                D3DRS_BLENDOPALPHA};
+
+bool stereo_hud_rs(D3DRENDERSTATETYPE s, DWORD v) {
+    if (s == D3DRS_SRCBLEND) g_game_blend[0] = v;
+    if (s == D3DRS_DESTBLEND) g_game_blend[1] = v;
+    for (int i = 0; i < 4; ++i)
+        if (s == kSepAlpha[i]) {
+            g_game_rs[i] = v;
+            return g_hud_active;  // while the HUD is redirected, ours stay
+        }
+    return false;
+}
+
+static void read_cursor();
+
+static void hud_begin(IDirect3DDevice9* dev) {
+    const Target comp = g_rt_info;
+    // The eyes: the composite target as it is now (both halves).
+    if (!shared_ensure(g_eyetex, dev, comp.w, comp.h) || !shared_ensure(g_hud, dev, comp.ow, comp.oh) ||
+        !shared_ensure(g_hudrt, dev, comp.ow, comp.oh, false))
+        return;
+    if (!g_hud_depth || g_hud_depth_w != comp.ow || g_hud_depth_h != comp.oh) {
+        if (g_hud_depth) g_hud_depth->Release();
+        g_hud_depth = nullptr;
+        if (FAILED(raw_create_depth(dev, comp.ow, comp.oh, D3DFMT_D24S8, &g_hud_depth))) {
+            logf("stereo: HUD depth %ux%u failed", comp.ow, comp.oh);
+            return;
+        }
+        g_hud_depth_w = comp.ow, g_hud_depth_h = comp.oh;
+    }
+    raw_stretch(dev, g_rt, nullptr, g_eyetex.surf, nullptr, D3DTEXF_NONE);
+    g_comp_rt = g_rt;
+    g_comp_depth = g_game_depth;
+    g_hud_dev = dev;
+    const D3DVIEWPORT9 vp = g_game_vp;  // in the composite's game size = the HUD texture's size
+    const RECT sc = g_game_scissor;
+    raw_set_rt(dev, 0, g_hudrt.surf);
+    raw_set_depth(dev, g_hud_depth);
+    raw_clear(dev, 0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, D3DCOLOR_ARGB(0, 0, 0, 0), 1, 0);
+    stereo_set_rt(g_hudrt.surf);
+    g_game_vp = vp;
+    g_game_scissor = sc;
+    raw_set_viewport(dev, &vp);
+    if (g_scissor_on) raw_set_scissor(dev, &sc);
+    // Alpha accumulates coverage: with the colour's SRCALPHA/INVSRCALPHA blend the HUD texture
+    // ends up premultiplied over transparent black.
+    raw_set_rs(dev, D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+    raw_set_rs(dev, D3DRS_BLENDOPALPHA, D3DBLENDOP_ADD);
+    g_hud_alpha_dest = ~0u;  // set per draw (hud_alpha)
+    g_hud_active = true;
+    g_hud_drawn = true;
+    read_cursor();
+    frame_note("    stereo: HUD redirected to the HUD texture");
+}
+
+static void hud_end() {
+    if (!g_hud_active) return;
+    g_hud_active = false;
+    for (int i = 0; i < 4; ++i) raw_set_rs(g_hud_dev, kSepAlpha[i], g_game_rs[i]);
+}
+
+IDirect3DSurface9* stereo_redirect_rt(IDirect3DSurface9* s) {
+    if (!g_hud_active) return s;
+    if (s == g_comp_rt) return g_hudrt.surf;
+    hud_end();  // the game moved on (the back buffer copy)
+    return s;
+}
+
+IDirect3DSurface9* stereo_redirect_depth(IDirect3DSurface9* s) {
+    return g_hud_active && s && s == g_comp_depth ? g_hud_depth : s;
+}
+
+// The HUD texture's alpha per draw: sprites blended "over" (DESTBLEND = INVSRCALPHA) add their
+// coverage (alpha ONE, INVSRCALPHA); additive, multiplicative and other blends leave alpha as it is
+// (ZERO, ONE) - additive light then shows as premultiplied colour with no coverage, and sprites
+// that don't change the colour (black additive quads) don't punch opaque holes in the panel.
+static void hud_alpha(IDirect3DDevice9* dev) {
+    const bool over = g_game_blend[1] == D3DBLEND_INVSRCALPHA;
+    const DWORD dest = over ? D3DBLEND_INVSRCALPHA : D3DBLEND_ONE;
+    if (dest == g_hud_alpha_dest) return;
+    raw_set_rs(dev, D3DRS_SRCBLENDALPHA, over ? D3DBLEND_ONE : D3DBLEND_ZERO);
+    raw_set_rs(dev, D3DRS_DESTBLENDALPHA, dest);
+    g_hud_alpha_dest = dest;
+}
+
+// Player 1's cursor: render-target pixels from the centre, +y up (findings-static.md). Read once
+// per frame (at the HUD's start).
+static bool g_cursor_ok;
+static float g_cursor[2];
+static void read_cursor() {
+    const uintptr_t gc = *reinterpret_cast<const volatile uintptr_t*>(va(kGameControl));
+    uintptr_t player = 0;
+    g_cursor_ok = gc && safe_copy(&player, gc + 0x24, 4) && player && safe_copy(g_cursor, player + 0x1BC, 8);
+}
+static bool cursor_pos(float* x, float* y) {
+    *x = g_cursor[0], *y = g_cursor[1];
+    return g_cursor_ok;
+}
+
+// A HUD sprite drawn centred on the cursor: the crosshair. HUD sprites are DrawPrimitiveUP quads
+// in local coordinates, placed by their cWVP (c0..c3); in clip space x * w/2, y * h/2 are pixels
+// from the centre of the composite target, +y up - the cursor's space.
+static bool is_crosshair(const void* up, UINT stride, UINT prims) {
+    if (!up || stride < 12 || prims != 2) return false;
+    float cx, cy;
+    if (!cursor_pos(&cx, &cy)) return false;
+    const vr::Mat4 m = load(0);
+    const float hw = float(g_hudrt.w) / 2, hh = float(g_hudrt.h) / 2;
+    float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+    for (int i = 0; i < 4; ++i) {
+        const float* v = reinterpret_cast<const float*>(static_cast<const uint8_t*>(up) + size_t(i) * stride);
+        const vr::Vec4 c = vr::apply(m, {v[0], v[1], v[2], 1});
+        if (std::fabs(c.w) < 1e-6f) return false;
+        const float px = c.x / c.w * hw, py = c.y / c.w * hh;
+        x0 = std::fmin(x0, px), x1 = std::fmax(x1, px), y0 = std::fmin(y0, py), y1 = std::fmax(y1, py);
+    }
+    const float mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    if (frame_logging()) {
+        char line[160];
+        snprintf(line, sizeof line, "    hud sprite centre %.1f %.1f size %.1f x %.1f (cursor %.1f %.1f) blend %lu/%lu", mx, my, x1 - x0,
+                 y1 - y0, cx, cy, g_game_blend[0], g_game_blend[1]);
+        frame_note(line);
+    }
+    return std::fabs(mx - cx) < 2 && std::fabs(my - cy) < 2 && x1 - x0 < 200 && y1 - y0 < 200;
+}
+
+HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx, const void* up, UINT stride, UINT prims) {
+    if (g_vr.mode == VrMode::off) return draw(ctx);
+    if (g_hud_active && !g_vr.crosshair && !(g_dbg & 4) && is_crosshair(up, stride, prims)) {
+        ++g_crosshair_skips;
+        frame_note("    stereo: crosshair skipped");
+        return S_OK;
+    }
+    if (g_hud_active) hud_alpha(dev);
+    if (!g_rt_resized && g_rt) {  // the back buffer's drawn area, for the flat screen
+        D3DSURFACE_DESC d{};
+        g_rt->GetDesc(&d);
+        if (d.Width == g_bb_w && d.Height == g_bb_h) {
+            const RECT r = {LONG(g_game_vp.X), LONG(g_game_vp.Y), LONG(g_game_vp.X + g_game_vp.Width), LONG(g_game_vp.Y + g_game_vp.Height)};
+            if (!g_bb_drawn) g_bb_rect = r;
+            else UnionRect(&g_bb_rect, &g_bb_rect, &r);
+            g_bb_drawn = true;
+            if (reads_target()) g_bb_comp_rect = r, g_bb_comp = true;  // the composite blit (pillarboxed)
+        }
+    }
+    if (!g_rt_scene) {
+        HRESULT hr = draw(ctx);
+        if (g_frame_stereo && !g_hud_active && !(g_dbg & 16) && g_rt_resized && g_rt_info.kind == kComposite) {
+            IDirect3DPixelShader9* ps = current_ps();
+            const ShaderInfo* pi = ps ? shader_info(ps) : nullptr;
+            if (pi && pi->hash == kCompositePs) hud_begin(dev);
+        }
+        return hr;
+    }
     IDirect3DVertexShader9* vs = current_vs();
     const ShaderInfo* info = vs ? shader_info(vs) : nullptr;
     bool correct = info && info->n_clip;
@@ -304,6 +546,8 @@ HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx) {
         const float* w = vs_shadow(UINT(info->clip_regs[0] + 3));
         if (std::fabs(w[0]) + std::fabs(w[1]) + std::fabs(w[2]) < 1e-7f) correct = false;  // orthographic
     }
+    if (correct) ++g_scene_persp;
+    if (!g_frame_stereo) return draw(ctx);
     if (correct && !update_eyes()) {
         ++g_scene_mono_draws;
         return draw(ctx);
@@ -364,6 +608,104 @@ HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx) {
     return hr;
 }
 
+bool stereo_frame_active() { return g_frame_stereo; }
+
+// --- Present ---
+
+// Flat frames: the game's picture in the back buffer -> the flat-screen texture (mono size).
+static bool copy_flat(IDirect3DDevice9* dev) {
+    IDirect3DSurface9* bb = nullptr;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb))) return false;
+    D3DSURFACE_DESC d{};
+    bb->GetDesc(&d);
+    RECT r = g_bb_comp ? g_bb_comp_rect : g_bb_drawn ? g_bb_rect : RECT{0, 0, LONG(d.Width), LONG(d.Height)};
+    r.left = (std::max)(r.left, 0L), r.top = (std::max)(r.top, 0L);
+    r.right = (std::min)(r.right, LONG(d.Width)), r.bottom = (std::min)(r.bottom, LONG(d.Height));
+    bool ok = r.right > r.left && r.bottom > r.top && shared_ensure(g_screen, dev, UINT(r.right - r.left), UINT(r.bottom - r.top));
+    IDirect3DSurface9* src = bb;
+    if (ok && d.MultiSampleType != D3DMULTISAMPLE_NONE) {
+        // Resolve first (a multisampled source can't be stretched or cropped on every driver).
+        D3DSURFACE_DESC rd{};
+        if (g_bb_resolve) g_bb_resolve->GetDesc(&rd);
+        if (!g_bb_resolve || rd.Width != d.Width || rd.Height != d.Height) {
+            if (g_bb_resolve) g_bb_resolve->Release();
+            g_bb_resolve = nullptr;
+            ok = SUCCEEDED(raw_create_rt(dev, d.Width, d.Height, d.Format, &g_bb_resolve));
+        }
+        if (ok) ok = SUCCEEDED(raw_stretch(dev, bb, nullptr, g_bb_resolve, nullptr, D3DTEXF_NONE));
+        src = g_bb_resolve;
+    }
+    if (ok) ok = SUCCEEDED(raw_stretch(dev, src, &r, g_screen.surf, nullptr, D3DTEXF_NONE));
+    bb->Release();
+    return ok;
+}
+
+// Time spent in stereo_present per frame (status line), and `vr dbg BITS` switches for bisecting
+// costs: 1 no mirror, 2 no D3D11 copies, 4 no crosshair check, 8 no culling widening, 16 no HUD
+// redirection.
+int g_dbg;
+static double g_present_ms, g_ms_stereo, g_ms_flat;
+static int g_present_n;
+static double now_ms() {
+    static LONGLONG f;
+    if (!f) {
+        LARGE_INTEGER q;
+        QueryPerformanceFrequency(&q);
+        f = q.QuadPart;
+    }
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return double(t.QuadPart) * 1000.0 / double(f);
+}
+
+void stereo_present(IDirect3DDevice9* dev, const FrameRequests& req) {
+    if (g_vr.mode == VrMode::off) return;
+    const double t0 = now_ms();
+    struct Timer {
+        double t0;
+        ~Timer() { g_present_ms += now_ms() - t0, ++g_present_n; }
+    } timer{t0};
+    hud_end();
+    const bool stereo = g_frame_stereo && g_hud_drawn;
+    const bool flat = !stereo && copy_flat(dev);
+    if (stereo) raw_stretch(dev, g_hudrt.surf, nullptr, g_hud.surf, nullptr, D3DTEXF_NONE);
+    if (g_vr.mirror && !(g_dbg & 1)) {
+        if (stereo) mirror_stereo(dev, g_eyetex.tex, g_hudrt.tex);
+        else if (flat) mirror_flat(dev, g_screen.tex);
+    }
+    if (handoff_ready()) {
+        handoff_sync(dev);
+        const bool copy = !(g_dbg & 2);
+        ID3D11Texture2D* eyes = stereo && copy ? handoff_copy(g_own11[0], g_eyetex.t11) : nullptr;
+        ID3D11Texture2D* hud = stereo && copy ? handoff_copy(g_own11[1], g_hud.t11) : nullptr;
+        ID3D11Texture2D* screen = flat && copy ? handoff_copy(g_own11[2], g_screen.t11) : nullptr;
+        vrsys_submit(eyes, hud, screen);
+        if (req.handoff_shot) {
+            if (stereo) {
+                handoff_save(eyes, req.handoff_name + "_eyes");
+                handoff_save(hud, req.handoff_name + "_hud");
+            } else {
+                handoff_save(screen, req.handoff_name + "_screen");
+            }
+        }
+    } else if (req.handoff_shot) {
+        logf("vr handoff: no D3D11 hand-off in this run (handoff=0 or no 9Ex device)");
+    }
+}
+
+void stereo_reset() {
+    hud_end();
+    shared_release(g_eyetex);
+    shared_release(g_hud);
+    shared_release(g_hudrt);
+    shared_release(g_screen);
+    if (g_hud_depth) g_hud_depth->Release();
+    if (g_bb_resolve) g_bb_resolve->Release();
+    g_hud_depth = g_bb_resolve = nullptr;
+    mirror_release();
+    handoff_release_d3d9();
+}
+
 void stereo_request_check() { g_check_requested = true; }
 int stereo_draws_this_frame() { return g_stereo_draws; }
 
@@ -388,16 +730,58 @@ void stereo_frame_end() {
         g_check_max = 0;
         g_check_draws = 0;
     }
+    // Frame times per mode (Present to Present), for the status line.
+    {
+        static double last;
+        const double t = now_ms();
+        if (last > 0) (g_frame_stereo && g_hud_drawn ? g_ms_stereo : g_ms_flat) += t - last;
+        last = t;
+    }
+    if (g_frame_stereo && g_hud_drawn) ++g_frames_stereo;
+    else ++g_frames_flat;
+    // The next frame's mode.
+    g_state = game_state();
+    g_frames_since_scene = g_scene_persp ? 0 : (std::min)(g_frames_since_scene + 1, 1 << 20);
+    if (g_state.level && !g_level_was) g_recentre_pending = true;  // a level started
+    g_level_was = g_state.level;
+    // Entering gameplay waits 0.5 s of steady gameplay state: at a level's start the cutscene flag
+    // is raised a few frames after the level appears (seen: 0.3 s of stereo before the intro).
+    static ULONGLONG gameplay_since;
+    const bool ok = g_vr.mode != VrMode::off && g_vr.stereo && g_state.gameplay && g_frames_since_scene < 30;
+    const ULONGLONG now = GetTickCount64();
+    if (!ok) gameplay_since = 0;
+    else if (!gameplay_since) gameplay_since = now;
+    const bool next = ok && (g_frame_stereo || now - gameplay_since >= 500);
+    if (next != g_frame_stereo) {
+        logf("stereo: %s (level %d cutscene %d paused %d, scene %s)", next ? "gameplay - stereo eyes + HUD panel" : "flat screen",
+             int(g_state.level), int(g_state.cutscene), int(g_state.paused), g_frames_since_scene < 30 ? "drawn" : "not drawn");
+        if (next && g_recentre_pending) {
+            vrsys_recentre();
+            g_recentre_pending = false;
+        }
+    }
+    g_frame_stereo = next;
+    g_hud_drawn = false;
+    g_bb_drawn = false;
+    g_bb_comp = false;
     g_last_stereo = g_stereo_draws;
     g_last_mono = g_scene_mono_draws;
     g_last_overlay = g_overlay_draws;
-    g_stereo_draws = g_scene_mono_draws = g_overlay_draws = 0;
+    g_last_crosshair_skips = g_crosshair_skips;
+    g_stereo_draws = g_scene_mono_draws = g_overlay_draws = g_scene_persp = g_crosshair_skips = 0;
+    ++g_frame_no;
 }
 
 const char* stereo_status() {
     if (g_vr.mode == VrMode::off) return "";
-    snprintf(g_status, sizeof g_status, ", stereo %s: %d scene draws x2, %d overlays x2, %d passes once", g_vr.stereo ? "on" : "off",
-             g_last_stereo, g_last_overlay, g_last_mono);
+    snprintf(g_status, sizeof g_status,
+             ", stereo %s: %d scene draws x2, %d overlays x2, %d passes once, %d crosshair skipped; frames %d stereo (%.1f fps) %d flat (%.1f fps); vr present %.2f ms%s%s",
+             g_vr.stereo ? "on" : "off", g_last_stereo, g_last_overlay, g_last_mono, g_last_crosshair_skips, g_frames_stereo,
+             g_ms_stereo > 0 ? g_frames_stereo * 1000.0 / g_ms_stereo : 0.0, g_frames_flat, g_ms_flat > 0 ? g_frames_flat * 1000.0 / g_ms_flat : 0.0,
+             g_present_n ? g_present_ms / g_present_n : 0.0, ex_status(), handoff_status());
+    g_present_ms = g_ms_stereo = g_ms_flat = 0;
+    g_present_n = 0;
+    g_frames_stereo = g_frames_flat = 0;
     return g_status;
 }
 

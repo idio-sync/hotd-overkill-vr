@@ -53,6 +53,18 @@ bool readable(uintptr_t addr) {
            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
 }
 
+// VirtualQuery walks the page table to size a region: in this game's big heaps one call can take
+// a fraction of a millisecond, so per-draw reads of game memory use an exception guard instead.
+bool safe_copy(void* dst, uintptr_t src, size_t n) {
+    if (!src) return false;
+    __try {
+        memcpy(dst, reinterpret_cast<const void*>(src), n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void* install_detour(uintptr_t image_va, const uint8_t* expect, size_t n, void* hook, const char* name) {
     auto target = reinterpret_cast<uint8_t*>(va(image_va));
     if (n < 5 || n > 16 || memcmp(target, expect, n) != 0) {

@@ -10,6 +10,8 @@
 //   0x9C7F20/0x9C7F24). Both are wrapped: for the duration of the call those four globals hold a
 //   wider frustum (eye FOV + cone_deg on each side), then the originals are restored, so only
 //   culling sees the wider view; the projection, cursor unprojection and LOD keep the game's FOV.
+//   The eye FOV is the widest half-angle of the eye projections in use (openvr: the headset's
+//   tangents; sim: the game's vertical FOV at the eye aspect). Stereo (gameplay) frames only.
 #include "common.h"
 
 #include <cmath>
@@ -35,12 +37,12 @@ struct WidenFrustum {
     float saved[4];
     bool on = false;
     WidenFrustum() {
-        if (!g_vr.stereo) return;
+
+        if (!stereo_frame_active() || (g_dbg & 8)) return;
         const float hx = gf(kFovX) * 0.5f, hy = gf(kFovY) * 0.5f;
         if (!(hx > 0 && hx < kPi / 2 && hy > 0 && hy < kPi / 2)) return;
-        // Sim eye: the game's vertical FOV at the eye image's aspect.
-        const float eye_hy = hy;
-        const float eye_hx = std::fmax(hx, std::atan(std::tan(hy) * float(g_vr.eye_w) / float(g_vr.eye_h)));
+        float eye_hx, eye_hy;
+        stereo_eye_half_angles(hx, hy, &eye_hx, &eye_hy);
         const float cone = g_vr.cone_deg * kPi / 180, margin = 3 * kPi / 180;
         const float wx = vr::widened_half_angle(eye_hx, cone, margin), wy = vr::widened_half_angle(eye_hy, cone, margin);
         saved[0] = gf(kSinX), saved[1] = gf(kCosX), saved[2] = gf(kSinY), saved[3] = gf(kCosY);
@@ -74,14 +76,19 @@ static void install_culling_hooks() {
 
 // --- frame limiter ---
 
-// Uncapped only while the scene is being drawn in stereo (gameplay and in-engine cutscenes); the
-// game's own cap comes back elsewhere (boot, menus, loading, video cutscenes - where it was never
-// tested uncapped, and where two early sim runs lost the D3D device).
+// Uncapped only in stereo (gameplay) frames; the game's own cap comes back in flat frames (menus,
+// loading, cutscenes, pause, death - where it was never tested uncapped, and where two early sim
+// runs lost the D3D device). In openvr mode WaitGetPoses paces the uncapped frames.
 static void set_limiter(bool want_uncapped) {
     static DWORD game_value = 1;
     static bool cleared;
     uintptr_t app = *reinterpret_cast<uintptr_t*>(va(kAppPtr));
-    if (!app || !readable(app + kFpsLimitOff)) return;
+    static uintptr_t checked;  // readable() is slow (VirtualQuery): once per app object
+    if (!app) return;
+    if (app != checked) {
+        if (!readable(app + kFpsLimitOff)) return;
+        checked = app;
+    }
     auto flag = reinterpret_cast<volatile DWORD*>(app + kFpsLimitOff);
     if (want_uncapped && *flag != 0) {
         game_value = *flag;
@@ -95,17 +102,14 @@ static void set_limiter(bool want_uncapped) {
     }
 }
 
-void engine_frame(bool stereo_last_frame) {
+void engine_frame(bool stereo_next_frame) {
     if (g_vr.mode == VrMode::off) return;
     static bool installed;
     if (!installed) {  // at the first Present: after SecuROM's start-up patching
         installed = true;
         install_culling_hooks();
     }
-    // A short debounce so a frame without scene draws (a load hitch) doesn't toggle it.
-    static int mono_frames = 1 << 20;  // untouched until the first stereo frame
-    mono_frames = stereo_last_frame ? 0 : (std::min)(mono_frames + 1, 1 << 20);
-    set_limiter(g_vr.uncap && g_vr.stereo && mono_frames < 30);
+    set_limiter(g_vr.uncap && stereo_next_frame);
 }
 
 }  // namespace hv

@@ -21,6 +21,8 @@
 //   aimdir X Y Z | off      replace the shot direction in FireBullets (world space)
 //   aimdir capture          the next shot's direction becomes the override for the shots after it
 //   aimorigin X Y Z | off   replace the shot origin
+//   dump ADDR SIZE NAME     raw bytes to hovr\NAME.bin (for diffing game state)
+//   findvt VA               log heap objects whose vtable is VA (va:0x... for an image VA)
 //   log TEXT                write TEXT to the log
 //   vr yaw D | vr pitch D   simulated head yaw (+ right) / pitch (+ up), degrees
 //   vr ipd M | vr unit M    eye separation in metres / metres per game unit
@@ -30,6 +32,11 @@
 //   vr scene [NAME]         PNG of the stereo scene target at full size (hovr\NAME.png)
 //   vr targets              PNGs of every resized colour target (hovr\rtN_WxH.png, alpha in _a.png)
 //   vr check                compare the engine's projection*view with the draws' matrices
+//   vr handoff [NAME]       PNGs of what the D3D11 side holds this frame: NAME_eyes + NAME_hud
+//                           (gameplay) or NAME_screen (flat), with _a.png alpha images
+//   vr recentre             recentre the head (yaw-only anchor at the current head pose)
+//   vr state                log the game state (level, cutscene, paused) and the frame mode
+//   vr crosshair 0|1        hide/show the game's crosshair in stereo gameplay
 //   vr                      log the current VR settings
 #include "common.h"
 
@@ -262,11 +269,25 @@ FrameRequests control_tick() {
                 req.check = true;
             } else if (what == "targets") {
                 req.dump_targets = true;
+            } else if (what == "handoff") {
+                req.handoff_shot = true;
+                req.handoff_name = a.empty() ? "handoff_" + std::to_string(++g_shot_no) : a;
+            } else if (what == "recentre" || what == "recenter") {
+                vrsys_recentre();
+            } else if (what == "dbg") {
+
+                g_dbg = atoi(a.c_str());
+            } else if (what == "crosshair") {
+                g_vr.crosshair = v != 0;
+            } else if (what == "state") {
+                GameState st = game_state();
+                logf("vr state: level %d cutscene %d paused %d gameplay %d; this frame %s", int(st.level), int(st.cutscene),
+                     int(st.paused), int(st.gameplay), stereo_frame_active() ? "stereo" : "flat");
             } else if (!what.empty()) {
                 logf("unknown vr command: %s", line.c_str());
             }
-            logf("vr: mode=%s stereo=%d yaw=%.1f pitch=%.1f ipd_m=%.4f unit_m=%.4f cone_deg=%.1f", mode_name(g_vr.mode),
-                 int(g_vr.stereo), g_vr.sim_yaw_deg, g_vr.sim_pitch_deg, g_vr.ipd_m, g_vr.unit_m, g_vr.cone_deg);
+            logf("vr: mode=%s stereo=%d yaw=%.1f pitch=%.1f ipd_m=%.4f unit_m=%.4f cone_deg=%.1f crosshair=%d", mode_name(g_vr.mode),
+                 int(g_vr.stereo), g_vr.sim_yaw_deg, g_vr.sim_pitch_deg, g_vr.ipd_m, g_vr.unit_m, g_vr.cone_deg, int(g_vr.crosshair));
         } else if (cmd == "peek") {
             std::string a;
             int n = 4;
@@ -312,12 +333,48 @@ FrameRequests control_tick() {
             if (cmd == "aimdir" && a == "capture") gun_capture_next();
             else if (cmd == "aimdir") gun_set_dir(on, x, y, z);
             else gun_set_origin(on, x, y, z);
+        } else if (cmd == "dump") {
+            // dump ADDR SIZE NAME: raw bytes to hovr\NAME.bin (state diffing)
+            std::string a, name;
+            int n = 256;
+            ss >> a >> n >> name;
+            uintptr_t addr = parse_addr(a);
+            if (!readable(addr) || !readable(addr + n - 1) || name.empty()) {
+                logf("dump %s: not readable", a.c_str());
+            } else {
+                std::wstring w = path_in((std::wstring(name.begin(), name.end()) + L".bin").c_str());
+                if (FILE* f = _wfopen(w.c_str(), L"wb")) {
+                    fwrite(reinterpret_cast<const void*>(addr), 1, size_t(n), f);
+                    fclose(f);
+                }
+                logf("dump %s (%p) %d bytes -> %s.bin", a.c_str(), reinterpret_cast<void*>(addr), n, name.c_str());
+            }
+        } else if (cmd == "findvt") {
+            // findvt VA: heap objects whose first dword is the (rebased) vtable VA
+            std::string a;
+            ss >> a;
+            const DWORD target = DWORD(parse_addr(a));
+            int hits = 0;
+            MEMORY_BASIC_INFORMATION mbi;
+            for (uintptr_t p = 0x10000; p < 0x7FFF0000 && hits < 32; p += mbi.RegionSize) {
+                if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof mbi)) break;
+                if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE || !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) ||
+                    (mbi.Protect & PAGE_GUARD))
+                    continue;
+                auto d = static_cast<const DWORD*>(mbi.BaseAddress);
+                for (size_t i = 0; i < mbi.RegionSize / 4 && hits < 32; ++i)
+                    if (d[i] == target) {
+                        logf("findvt %08lx: object at %p", target, &d[i]);
+                        ++hits;
+                    }
+            }
+            logf("findvt %08lx: %d hits", target, hits);
         } else if (cmd == "log") {
             logf("log: %s", line.size() > 4 ? line.c_str() + 4 : "");
         } else {
             logf("unknown command: %s", line.c_str());
         }
-        if (req.shot || req.log_frame || req.scene_shot || req.check || req.dump_targets) break;  // one capture per frame
+        if (req.shot || req.log_frame || req.scene_shot || req.check || req.dump_targets || req.handoff_shot) break;  // one capture per frame
     }
     return req;
 }

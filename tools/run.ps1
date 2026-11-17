@@ -31,6 +31,9 @@ if ($running) { throw "HOTD_NG is already running (PID $($running.Id -join ', ')
 
 New-Item -ItemType Directory -Force $hovr | Out-Null
 Copy-Item (Join-Path $PSScriptRoot '..\out\XINPUT1_3.dll') (Join-Path $Game 'XINPUT1_3.dll') -Force
+# openvr_api.dll (delay-loaded; only used with mode=openvr)
+$ovr = Join-Path $PSScriptRoot '..\out\openvr_api.dll'
+if (Test-Path $ovr) { Copy-Item $ovr (Join-Path $Game 'openvr_api.dll') -Force }
 
 # The probe redirects %APPDATA% to hovr\AppData; seed it once with a copy of the real save.
 $save = Join-Path $hovr 'AppData\sega\typing of the dead overkill'

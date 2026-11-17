@@ -1,7 +1,8 @@
 // Direct3D 9 hooks: device creation (forced windowed), frame pacing stats, render target
 // inventory, screenshots, and `frame` logs (every state change and draw of one frame, with
 // vertex shader constants named from the shaders' CTAB). In sim/openvr mode the hooks also
-// feed stereo.cpp: double-wide screen-sized targets, scaled viewports/rects, per-eye draws.
+// feed stereo.cpp: double-wide screen-sized targets, scaled viewports/rects, per-eye draws, the
+// HUD redirection; the device is created as 9Ex (d3d9ex.cpp) for the D3D11 hand-off.
 #include "common.h"
 
 #include <cstdio>
@@ -13,7 +14,7 @@ namespace hv {
 // IDirect3D9 / IDirect3DDevice9 vtable indices.
 enum {
     kCreateDevice = 16,
-    kReset = 16, kPresent = 17, kCreateTexture = 23, kCreateRenderTarget = 28, kCreateDepthStencilSurface = 29,
+    kReset = 16, kPresent = 17, kCreateTexture = 23, kCreateVolumeTexture = 24, kCreateCubeTexture = 25, kCreateVertexBuffer = 26, kCreateIndexBuffer = 27, kCreateRenderTarget = 28, kCreateDepthStencilSurface = 29,
     kStretchRect = 34, kSetRenderTarget = 37, kSetDepthStencilSurface = 39, kClear = 43, kSetTransform = 44,
     kSetViewport = 47, kGetViewport = 48, kSetRenderState = 57, kSetTexture = 65, kSetScissorRect = 75,
     kGetScissorRect = 76, kDrawPrimitive = 81, kDrawIndexedPrimitive = 82, kDrawPrimitiveUP = 83,
@@ -34,6 +35,9 @@ static std::vector<Range> g_dirty;
 static int g_cap_fps;
 static LONGLONG g_qpf;
 
+static void log_pools();
+static void count_pool(int kind, D3DPOOL pool);
+
 static void flog(const char* fmt, ...) {
     if (!g_frame) return;
     va_list a;
@@ -44,8 +48,10 @@ static void flog(const char* fmt, ...) {
 }
 
 void frame_note(const char* text) { flog("%s", text); }
+bool frame_logging() { return g_frame != nullptr; }
 const float* vs_shadow(UINT reg) { return g_vsc[reg < 256 ? reg : 255]; }
 IDirect3DVertexShader9* current_vs() { return g_vs; }
+IDirect3DPixelShader9* current_ps() { return g_ps; }
 
 static const char* fmt_name(D3DFORMAT f) {
     static char buf[16];
@@ -166,6 +172,32 @@ HRESULT raw_set_vs_const(IDirect3DDevice9* dev, UINT start, const float* v, UINT
 }
 HRESULT raw_set_viewport(IDirect3DDevice9* dev, const D3DVIEWPORT9* vp) { return o_SetViewport(dev, vp); }
 HRESULT raw_set_scissor(IDirect3DDevice9* dev, const RECT* r) { return o_SetScissorRect(dev, r); }
+HRESULT raw_set_rt(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9* s) { return o_SetRenderTarget(dev, index, s); }
+HRESULT raw_set_depth(IDirect3DDevice9* dev, IDirect3DSurface9* s) { return o_SetDepthStencilSurface(dev, s); }
+HRESULT raw_set_texture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* t) { return o_SetTexture(dev, stage, t); }
+HRESULT raw_set_vs(IDirect3DDevice9* dev, IDirect3DVertexShader9* v) { return o_SetVertexShader(dev, v); }
+HRESULT raw_set_ps(IDirect3DDevice9* dev, IDirect3DPixelShader9* p) { return o_SetPixelShader(dev, p); }
+HRESULT raw_set_rs(IDirect3DDevice9* dev, D3DRENDERSTATETYPE st, DWORD v) { return o_SetRenderState(dev, st, v); }
+HRESULT raw_dpup(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT n, const void* v, UINT stride) {
+    return o_DrawPrimitiveUP(dev, t, n, v, stride);
+}
+HRESULT raw_clear(IDirect3DDevice9* dev, DWORD n, const D3DRECT* r, DWORD flags, D3DCOLOR c, float z, DWORD st) {
+    return o_Clear(dev, n, r, flags, c, z, st);
+}
+HRESULT raw_stretch(IDirect3DDevice9* dev, IDirect3DSurface9* src, const RECT* sr, IDirect3DSurface9* dst, const RECT* dr,
+                    D3DTEXTUREFILTERTYPE f) {
+    return o_StretchRect(dev, src, sr, dst, dr, f);
+}
+HRESULT raw_create_texture(IDirect3DDevice9* dev, UINT w, UINT h, UINT levels, DWORD usage, D3DFORMAT f, D3DPOOL pool,
+                           IDirect3DTexture9** tex, HANDLE* shared) {
+    return o_CreateTexture(dev, w, h, levels, usage, f, pool, tex, shared);
+}
+HRESULT raw_create_depth(IDirect3DDevice9* dev, UINT w, UINT h, D3DFORMAT f, IDirect3DSurface9** out) {
+    return o_CreateDepthStencilSurface(dev, w, h, f, D3DMULTISAMPLE_NONE, 0, FALSE, out, nullptr);
+}
+HRESULT raw_create_rt(IDirect3DDevice9* dev, UINT w, UINT h, D3DFORMAT f, IDirect3DSurface9** out) {
+    return o_CreateRenderTarget(dev, w, h, f, D3DMULTISAMPLE_NONE, 0, FALSE, out, nullptr);
+}
 
 static void log_pp(const char* what, const D3DPRESENT_PARAMETERS* pp) {
     logf("%s: %ux%u %s x%u ms=%d swap=%d hwnd=%p windowed=%d autodepth=%d %s flags=%lx refresh=%u interval=%x", what,
@@ -251,8 +283,8 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
         logf("frame log written (frame %d)", g_frame_no);
     }
     if (ini_int(L"gun_hook", 1)) install_gun_hook();  // once; after SecuROM's start-up patching
-    engine_frame(stereo_draws_this_frame() > 0);
     FrameRequests req = control_tick();
+    stereo_present(dev, req);  // VR: hand-off, desktop mirror, submit
     if (req.shot) save_backbuffer(dev, req.shot_name);  // the back buffer still holds this frame
     if (req.scene_shot) {
         if (stereo_scene_surface()) save_surface(dev, stereo_scene_surface(), req.scene_name);
@@ -268,9 +300,12 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
             save_surface(dev, s, "rt" + std::to_string(i++) + "_" + std::to_string(d.Width) + "x" + std::to_string(d.Height), true);
         }
     }
-    stereo_frame_end();
+    stereo_frame_end();  // decides the next frame's mode
+    engine_frame(stereo_frame_active());
 
     HRESULT hr = o_Present(dev, a, b, w, r);
+    if (hr == S_PRESENT_OCCLUDED || hr == S_PRESENT_MODE_CHANGED) hr = D3D_OK;  // 9Ex success codes the game doesn't know
+    if (g_vr.mode != VrMode::off) vrsys_wait_poses();
     static HRESULT last_hr = S_OK;
     if (hr != last_hr) {
         logf("Present -> %08lx (frame %d, %d draws)", hr, g_frame_no, g_draws);
@@ -293,6 +328,8 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
                  frames_since / since, min_dt * 1000.0 / g_qpf, max_dt * 1000.0 / g_qpf, g_draws, stereo_status());
         logf("%s", status);
         write_status(status);
+        static int reports;
+        if (++reports % 12 == 1) log_pools();
         last_report = now.QuadPart;
         frames_since = 0;
         min_dt = LLONG_MAX;
@@ -332,6 +369,9 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
 static HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
     log_pp("Reset (game)", pp);
     fix_pp(pp);
+    if (ex_enabled()) pp->Windowed = TRUE;
+    stereo_reset();
+    stereo_set_backbuffer(pp->BackBufferWidth, pp->BackBufferHeight);
     HRESULT hr = o_Reset(dev, pp);
     logf("Reset -> %08lx", hr);
     return hr;
@@ -339,15 +379,75 @@ static HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARA
 
 static HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h, UINT levels, DWORD usage, D3DFORMAT f,
                                                   D3DPOOL pool, IDirect3DTexture9** tex, HANDLE* shared) {
+    count_pool(0, pool);
     UINT rw = w, rh = h;
     bool resize = (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)) &&
                   stereo_target_size(w, h, (usage & D3DUSAGE_DEPTHSTENCIL) != 0, &rw, &rh);
+    bool converted;
+    pool = ex_pool(pool, &converted);
     HRESULT hr = o_CreateTexture(dev, rw, rh, levels, usage, f, pool, tex, shared);
+    if (SUCCEEDED(hr) && ex_enabled()) {
+        ex_forget(*tex);
+        if (converted) ex_track_texture(*tex);
+    }
     if (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL))
         logf("CreateTexture %ux%u %s %s levels=%u -> %p", w, h, fmt_name(f),
              usage & D3DUSAGE_RENDERTARGET ? "RT" : "DS", levels, SUCCEEDED(hr) ? *tex : nullptr);
     if (resize && SUCCEEDED(hr)) stereo_track_texture(*tex, w, h);
     return hr;
+}
+
+// Resource pools the game uses (D3D9Ex has no D3DPOOL_MANAGED): counts per pool, logged.
+static long g_pool_count[4][4];  // [kind: tex, cube, vb, ib][pool]
+static void count_pool(int kind, D3DPOOL pool) {
+    if (unsigned(pool) < 4) ++g_pool_count[kind][pool];
+}
+static void log_pools() {
+    static const char* kinds[] = {"textures", "cube textures", "vertex buffers", "index buffers"};
+    for (int k = 0; k < 4; ++k)
+        logf("pools: %s default %ld managed %ld systemmem %ld scratch %ld", kinds[k], g_pool_count[k][0], g_pool_count[k][1],
+             g_pool_count[k][2], g_pool_count[k][3]);
+}
+using CreateCube_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DCubeTexture9**, HANDLE*);
+using CreateVB_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, DWORD, DWORD, D3DPOOL, IDirect3DVertexBuffer9**, HANDLE*);
+using CreateIB_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DIndexBuffer9**, HANDLE*);
+static CreateCube_t o_CreateCubeTexture;
+static CreateVB_t o_CreateVertexBuffer;
+static CreateIB_t o_CreateIndexBuffer;
+static HRESULT STDMETHODCALLTYPE hk_CreateCubeTexture(IDirect3DDevice9* dev, UINT e, UINT l, DWORD u, D3DFORMAT f, D3DPOOL p,
+                                                      IDirect3DCubeTexture9** t, HANDLE* s) {
+    count_pool(1, p);
+    bool converted;
+    p = ex_pool(p, &converted);
+    HRESULT hr = o_CreateCubeTexture(dev, e, l, u, f, p, t, s);
+    if (SUCCEEDED(hr) && ex_enabled()) {
+        ex_forget(*t);
+        if (converted) ex_track_cube(*t);
+    }
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT n, DWORD u, DWORD fvf, D3DPOOL p,
+                                                       IDirect3DVertexBuffer9** b, HANDLE* s) {
+    count_pool(2, p);
+    bool converted;
+    return o_CreateVertexBuffer(dev, n, u, fvf, ex_pool(p, &converted), b, s);
+}
+static HRESULT STDMETHODCALLTYPE hk_CreateIndexBuffer(IDirect3DDevice9* dev, UINT n, DWORD u, D3DFORMAT f, D3DPOOL p,
+                                                      IDirect3DIndexBuffer9** b, HANDLE* s) {
+    count_pool(3, p);
+    bool converted;
+    return o_CreateIndexBuffer(dev, n, u, f, ex_pool(p, &converted), b, s);
+}
+
+using CreateVolume_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                   IDirect3DVolumeTexture9**, HANDLE*);
+static CreateVolume_t o_CreateVolumeTexture;
+static HRESULT STDMETHODCALLTYPE hk_CreateVolumeTexture(IDirect3DDevice9* dev, UINT w, UINT h, UINT d, UINT l, DWORD u, D3DFORMAT f,
+                                                        D3DPOOL p, IDirect3DVolumeTexture9** t, HANDLE* s) {
+    bool converted;
+    p = ex_pool(p, &converted);
+    if (converted) logf("d3d9ex: a MANAGED volume texture %ux%ux%u became DEFAULT; its locks are not emulated", w, h, d);
+    return o_CreateVolumeTexture(dev, w, h, d, l, u, f, p, t, s);
 }
 
 static HRESULT STDMETHODCALLTYPE hk_CreateRenderTarget(IDirect3DDevice9* dev, UINT w, UINT h, D3DFORMAT f, D3DMULTISAMPLE_TYPE ms,
@@ -391,6 +491,7 @@ static HRESULT STDMETHODCALLTYPE hk_StretchRect(IDirect3DDevice9* dev, IDirect3D
 }
 
 static HRESULT STDMETHODCALLTYPE hk_SetRenderTarget(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9* s) {
+    if (index == 0) s = stereo_redirect_rt(s);  // HUD redirection (stereo.cpp)
     if (index == 0) g_rt0 = s;
     if (g_frame) {
         D3DSURFACE_DESC d{};
@@ -414,7 +515,8 @@ static HRESULT STDMETHODCALLTYPE hk_SetDepthStencilSurface(IDirect3DDevice9* dev
         if (s) s->GetDesc(&d);
         flog("SetDepthStencil %p %ux%u %s", s, d.Width, d.Height, fmt_name(d.Format));
     }
-    return o_SetDepthStencilSurface(dev, s);
+    stereo_note_depth(s);
+    return o_SetDepthStencilSurface(dev, stereo_redirect_depth(s));
 }
 
 static HRESULT STDMETHODCALLTYPE hk_Clear(IDirect3DDevice9* dev, DWORD n, const D3DRECT* r, DWORD flags, D3DCOLOR c, float z, DWORD s) {
@@ -474,6 +576,7 @@ static HRESULT STDMETHODCALLTYPE hk_SetRenderState(IDirect3DDevice9* dev, D3DREN
                     s == D3DRS_CULLMODE || s == D3DRS_SCISSORTESTENABLE || s == D3DRS_COLORWRITEENABLE || s == D3DRS_STENCILENABLE))
         flog("RS %d = %lu", int(s), v);
     if (s == D3DRS_SCISSORTESTENABLE) stereo_scissor_enable(v != 0);
+    if (stereo_hud_rs(s, v)) return D3D_OK;
     return o_SetRenderState(dev, s, v);
 }
 
@@ -535,9 +638,13 @@ static HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, 
 }
 static HRESULT STDMETHODCALLTYPE hk_DrawPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT n, const void* v, UINT stride) {
     log_draw("DPUP", n);
+    if (g_frame && v && stride >= 12) {
+        auto f = static_cast<const float*>(v);
+        flog("    type %d stride %u v0 % .2f % .2f % .3f", int(t), stride, f[0], f[1], f[2]);
+    }
     ++g_draws;
     DpupArgs a{dev, t, n, v, stride};
-    return stereo_draw(dev, run_dpup, &a);
+    return stereo_draw(dev, run_dpup, &a, v, stride, n);
 }
 static HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT minv, UINT nv, UINT n,
                                                            const void* idx, D3DFORMAT f, const void* v, UINT stride) {
@@ -579,6 +686,10 @@ static void hook_device(IDirect3DDevice9* dev) {
     HOOK(kReset, Reset);
     HOOK(kPresent, Present);
     HOOK(kCreateTexture, CreateTexture);
+    HOOK(kCreateVolumeTexture, CreateVolumeTexture);
+    HOOK(kCreateCubeTexture, CreateCubeTexture);
+    HOOK(kCreateVertexBuffer, CreateVertexBuffer);
+    HOOK(kCreateIndexBuffer, CreateIndexBuffer);
     HOOK(kCreateRenderTarget, CreateRenderTarget);
     HOOK(kCreateDepthStencilSurface, CreateDepthStencilSurface);
     HOOK(kStretchRect, StretchRect);
@@ -611,14 +722,19 @@ static void hook_device(IDirect3DDevice9* dev) {
 using CreateDevice_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*, IDirect3DDevice9**);
 static CreateDevice_t o_CreateDevice;
 
+static bool g_want_ex;
+
 static HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD behavior,
                                                  D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** dev) {
     log_pp("CreateDevice (game)", pp);
     logf("  adapter=%u type=%d focus=%p behavior=%lx", adapter, int(type), focus, behavior);
     fix_pp(pp);
-    HRESULT hr = o_CreateDevice(d3d, adapter, type, focus, behavior, pp, dev);
+    stereo_set_backbuffer(pp->BackBufferWidth, pp->BackBufferHeight);
+    HRESULT hr = g_want_ex ? ex_create_device(adapter, type, focus, behavior, pp, dev)
+                           : o_CreateDevice(d3d, adapter, type, focus, behavior, pp, dev);
     logf("CreateDevice -> %08lx", hr);
     if (SUCCEEDED(hr)) hook_device(*dev);
+    if (SUCCEEDED(hr) && ex_enabled()) handoff_init(*dev);
     return hr;
 }
 
@@ -626,8 +742,20 @@ using Direct3DCreate9_t = IDirect3D9*(WINAPI*)(UINT);
 static Direct3DCreate9_t o_Direct3DCreate9;
 
 static IDirect3D9* WINAPI hk_Direct3DCreate9(UINT sdk) {
-    IDirect3D9* d3d = o_Direct3DCreate9(sdk);
-    logf("Direct3DCreate9(%u) -> %p", sdk, d3d);
+    static bool started;
+    if (!started) {
+        started = true;
+        vrsys_start();  // OpenVR (mode=openvr) before any render target is sized; failure -> off
+    }
+    // VR modes: a 9Ex device for the D3D11 hand-off (sim: unless handoff=0).
+    IDirect3D9* d3d = nullptr;
+    g_want_ex = g_vr.mode == VrMode::openvr || (g_vr.mode == VrMode::sim && g_vr.handoff);
+    if (g_want_ex) d3d = ex_create_d3d(sdk);
+    if (!d3d) {
+        g_want_ex = false;
+        d3d = o_Direct3DCreate9(sdk);
+    }
+    logf("Direct3DCreate9(%u) -> %p%s", sdk, d3d, g_want_ex ? " (9Ex)" : "");
     if (d3d) patch_vtbl(d3d, kCreateDevice, reinterpret_cast<void*>(hk_CreateDevice), reinterpret_cast<void**>(&o_CreateDevice));
     return d3d;
 }
