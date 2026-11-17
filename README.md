@@ -5,10 +5,10 @@ A VR mod for the **House of the Dead: Overkill** mode inside *The Typing of the 
 its HUD floats on a panel in front of you; menus, the loadout screen, cutscenes, the pause menu and
 the death screen appear on a large flat virtual screen. Design: `docs/superpowers/specs/2026-11-17-hotd-overkill-vr-design.md`.
 
-Status: **milestone 2** (the controller is the gun: it aims every shot, its buttons fire, reload,
-switch weapons and pause, it points at the flat screen in menus, and it pulses on each shot). The
-gun model in your hand is milestone 3. Milestones 1 and 2 have been checked in sim mode only; the
-headset checklists below are for the first headset session.
+Status: **milestone 3** (the game's own weapon model in your hand: the current weapon's
+first-person mesh follows the controller, switches with the weapon, and its magazine drops out
+and back on reload; shots go along its barrel). Milestones 1-3 have been checked in sim mode only;
+the headset checklists below are for the first headset session.
 
 ## How it works (short)
 
@@ -24,6 +24,11 @@ headset checklists below are for the first headset session.
   the gun points, from where the gun is. The game's cursor is moved to where the gun's ray meets
   the scene, so the game's own aim logic agrees. The controller's buttons become the game's
   mouse/keyboard input; the real mouse is ignored while the controllers are in use.
+- The gun in your hand is the game's own first-person mesh (`GunArms_<Weapon>`, shipped in the
+  game's hud packs and loaded with every level, but never drawn by the game). The mod finds the
+  resident mesh's GPU buffers and textures through the current weapon and draws them in both eyes,
+  depth-tested against the scene. Shots fly along the drawn barrel, from its muzzle. Nothing is
+  extracted from the game's files.
 - In VR modes the game's Direct3D 9 device is created as Direct3D 9Ex so the eye images, HUD and
   flat screen can be shared with a Direct3D 11 device that submits them to SteamVR (eyes) and
   shows them as SteamVR overlays (HUD panel, flat screen).
@@ -76,8 +81,26 @@ Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder.
 | `reload_gesture` | `0` | `1`: pulling the trigger while the gun points more than `reload_gesture_deg` (60) degrees away from where you look reloads, like a light gun pointed off-screen |
 | `btn_reload`, `btn_switch`, `btn_grenade`, `btn_pause`, `btn_recentre` | `gun.a`, `gun.b`, `gun.grip`, `off.b,off.a`, `gun.stick` | controller buttons for each action: `gun.` (the gun hand) or `off.` (the other hand) + `a` (A/X), `b` (B/Y: SteamVR's application-menu button), `grip`, `stick` (stick click), `trigger`; a comma means either. Recentre fires after holding for a second |
 | `game_fire`, `game_reload`, `game_switch`, `game_grenade`, `game_pause` | `lmb`, `mmb`, `TAB`, `rmb`, `ESCAPE` | what each action sends to the game: `lmb`, `rmb`, `mmb`, `wheelup`, `wheeldown`, or a key name (`RETURN`, `SPACE`, `TAB`, `A`-`Z`, `0`-`9`, `F1`..., `0xNN`). The defaults are the game's own PC controls (Game Settings > Controls: left click fire, middle click reload, right click grenade, wheel or TAB swap weapon, Esc pause) |
+| `gun_model` | `1` | draw the current weapon's model in the gun hand (`0`: no model, aim as in milestone 2) |
+| `gun_grip` | `0,-0.03,0.05` | where the model's grip sits in the controller's frame, metres (x right, y up, z back; relative to the pointing pose SteamVR reports) |
+| `gun_scale` | `1.0` | model scale (1 = the game's own size) |
+| `aim_barrel` | `1` | shots start at the model's muzzle and fly along its barrel (`0`: from the controller) |
+| `clip_anim` | `1` | the magazine drops out and back in during a reload |
+| `clip_drop` | `0.2` | how far the magazine drops, metres |
+| `gun_light` | `1.0` | brightness of the gun's lighting |
+| `gun_face_sign` | `1` | `-1` if the gun looks lit from inside (flips which side of its triangles faces out) |
+| `show_<weapon>` | see below | `0` hides that weapon's model (aim and everything else still work) |
+| `clip_<weapon>` | see below | magazine: `0` hidden, `1` drops on reload, `2` always drawn, no animation |
+| `hold_<weapon>` | `0,0` | yaw, pitch (degrees) the model is turned in the hand about its grip; the aim turns with the barrel |
+| `grip_<weapon>`, `muzzle_<weapon>`, `barrel_<weapon>` | measured | model-space grip point, muzzle point (cm) and barrel direction; defaults measured from the meshes |
 | `sim_hand` | `0.15,-0.25,-0.35` | sim only: gun hand position relative to the head, metres |
 | `sim_hand_yaw`, `sim_hand_pitch` | `0` | sim only: gun hand direction relative to the head, degrees |
+
+`<weapon>` is one of `magnum`, `gold_magnum`, `handcannon`, `pump`, `autoshotgun`, `smg`,
+`rifle`, `minigun`, `crossbow`. Defaults: all models shown; magazines drop for the magnum, auto
+shotgun, SMG and rifle, are hidden for the hand cannon, pump and crossbow (their "clip" meshes need
+the game's arm skeleton to be placed) and drawn fixed for the minigun (its barrel cluster). The gold
+magnum has no magazine.
 
 ### Controls (defaults)
 
@@ -109,6 +132,11 @@ screenshot). The full list is at the top of `src/mod/control.cpp`. VR ones:
   `vr hold NAME`, `vr release NAME|all`. `vr gun` logs the weapon, ammo and the aim; `vr marker`,
   `vr aim`, `vr gesture` switch those settings live; `vr god 1` keeps player 1 alive for tests;
   `vr actions 1` logs the game's input actions as they change.
+- Gun model: `vr gunmodel [0|1]` (log, switch off/on), `vr gunview aim|back|right|left|front|top|bottom`
+  (sim head/hand presets for looking at the gun), `vr barrelline 1` (a red line from the muzzle to
+  the aim point), `vr clipout F` (hold the magazine F of the way out; no F = from the reload),
+  `vr gunset WEAPON show|clip|grip|barrel|muzzle|clipdir|hold V...` (live tuning).
+  `tools/gun_mesh.py PACK.pc --png DIR` measures the meshes in an installed hud pack.
 
 ## Headset playtest checklist (milestone 1)
 
@@ -182,3 +210,30 @@ barrel's line, and anything that fired when it shouldn't (or didn't when it shou
 Things to note for the next milestone: whether the HUD panel size/distance/height is right
 (`hud_width`, `hud_distance`, `hud_drop`), whether the flat screen is too big or too close, the
 world scale (`unit_m`), and whether head turns beyond the cone show missing objects.
+
+## Headset playtest checklist (milestone 3: the gun model)
+
+Same start-up as above. The log names the model: `gun model: weapon ... -> GunArms_Magnum (magnum)
+with its magazine`.
+
+1. **The gun in hand**: in the first fight, the magnum is in your right hand where the controller
+   is, life-sized (a real Desert Eagle is ~27 cm long). Does the grip sit in your palm? If it
+   floats ahead/behind/above, adjust `gun_grip` (metres; z back, y up) and note the value. If the
+   whole gun looks too big or small, try `gun_scale`.
+2. **Barrel vs hits (the important one)**: with `marker=1`, the red dot must sit on the line of
+   the barrel, at any distance, and shots must land on it. Then with `marker=0`: do shots land
+   where the barrel points? If the gun feels tilted in the hand (barrel too high/low for a natural
+   wrist), set `hold_magnum = 0,PITCH` (or `hand_pitch`, which tilts gun and aim together) - the
+   aim follows the barrel either way. Report the values that feel right.
+3. **Look at it**: turn the gun around, look at its sides, top, bottom and muzzle. Anything
+   missing, inside-out, or holes? Note which weapon and which side.
+4. **Lighting**: plausible in dark and bright rooms? Too bright/dark -> `gun_light`. If it looks
+   lit from the inside, `gun_face_sign=-1`.
+5. **Switching**: with two weapons in the loadout (the test save has the SMG), B switches and the
+   model changes with the HUD's weapon.
+6. **Reload** (A): the magazine drops out of the grip and slides back before the reload ends.
+   Distance OK (`clip_drop`)? Should it be off (`clip_anim=0`)?
+7. **Other weapons** if you have them: each one's grip and barrel; any that look broken get
+   `show_<weapon>=0`. Report which.
+8. **Occlusion**: pushing the gun into a wall or a zombie hides the part inside it (that is the
+   world's depth, expected).

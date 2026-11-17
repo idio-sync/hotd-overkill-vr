@@ -179,3 +179,56 @@ findings-static.md. Everything below was observed in the running game unless mar
   camera kept its pace; `vr god 1` was the useful one.
 - Menu back arrows (the "<" buttons) ignore injected clicks (harness and controller alike); Escape
   (the controller's pause button) goes back.
+
+## The weapon model (milestone 3, 2026-11-17)
+- **The models are instanced, just never drawn.** At level start the game makes an entity with an
+  actor instance for `GunArms_<Weapon>` and `GunArms_<Weapon>_Clip` of every equipped weapon (for
+  both players). The weapon data block (`cWeapon+4`) lists its entities as (hash, 0, entity*)
+  triples from +0x28 (magnum: gun entity at +0x6C, magazine at +0x78). The actor instance
+  (engine class, vtable 0x80FB58, no RTTI) sits inside the entity's allocation (E+0x290 seen):
+  I+0x08 actor hash, I+0x8C the ACTR resource, I+0xC8 render flags, I+0xDC its transform node
+  (position, quaternion, scale), I+0xF0 the owning entity.
+- **How the HUD rounds are drawn** (`drawstack 3a5de9a696514b3a`): `cPlayerHUD3DWeaponClip`
+  (vtable 0x7FFEC4, slot 20 = 0x437720) sets a HUD camera (copies the view 0x9C7E48, builds a
+  look-at), writes each round's node position/quaternion (+4/+0x14, flag |= 0x800), and draws one
+  instanced batch through 0x5B6C20 -> 0x7697A0 -> 0x5207E0 -> the instance's vtable+0x64 (needs
+  I+0xC8 & 0x40, not 0x800). So the engine can draw an actor on demand, but only with its own
+  camera/state set-up around it.
+- **Packs** (`tools/gun_mesh.py`): the inflated .pc is resident verbatim (pointer fields fixed up).
+  Header = 5-dword entries from offset 0 (x, hash, size, name offset, type; type 0 VSHR, 4 PSHR,
+  8 TEXR, 0xC ACTR, 0x10 MTRL, 0x14 VTXD), then the string table (16-byte aligned). ACTR: +8
+  hash, +0xC size, +0x28 node, +0x6C name; node+0xB0 mesh; mesh +0 vertex count, +4 vertex buffer
+  record {IDirect3DVertexBuffer9*, 0, count, stride}, +0xC primitive groups {count, material,
+  texture list*} (the list pointer points at the first texture record, its count is the dword
+  before; SMG's groups are not 4-byte aligned), +0x44 index count, +0x48 index buffer record
+  {IDirect3DIndexBuffer9*, 0, count, 2, D3DFMT}, +0x60 vertex format hash. Texture record W:
+  W+8 hash, W+0x20 == W, W+0x24 IDirect3DTexture9*; the list is diffuse, normal, specular.
+  Vertex format vf_stock_staticsinglenormalmapped = position f3, normal f3, colour, uv f2,
+  tangent f4 (52 bytes). Every GunArms mesh is one node and one primitive group; vertices are in
+  the model's own space (no skinning needed for the bind pose).
+- **Method chosen: option 2** (the engine's own GPU buffers and textures, our own draw call and
+  shaders). Option 1 (making the engine draw its instance) would need the engine's camera/light
+  state set up around an unknown draw entry point, and would draw with the game's single camera
+  (we need both eyes, our matrices, and the right moment in the scene pass); option 3 (parsing
+  the user's .pc at runtime) would duplicate what is already resident. Our draw: once per stereo
+  frame, when the game leaves the scene target after its opaque pass (the scene target is drawn
+  in two sessions: ~300 opaque draws, a one-draw detour to a 1280x180 target, then transparent
+  effects), depth-tested against the scene depth, each eye with its own matrices and viewport.
+  Shading: diffuse texture, fixed view-space key light + ambient, specular map; no normal map.
+- **Mesh poses differ per weapon** (measured from the meshes, units cm, y up): magnum, hand
+  cannon, pump, auto shotgun, SMG and crossbow have the barrel along +x; the gold magnum
+  (Gwendalin) and the minigun along +z; the assault rifle is toed in (barrel ~(0.975, -0.069,
+  -0.212): about 12.5 degrees of yaw and 4 of pitch). Each weapon gets a description (barrel
+  direction, muzzle point on the bore, grip point, up, magazine drop direction) and the shot ray
+  is the barrel line, so the barrel points exactly where shots go (unit-tested in
+  tests/test_stereo.cpp: points along the drawn barrel lie on the shot ray).
+- **Magazines**: magnum and SMG magazines sit in the grip in model space; the auto shotgun's
+  and rifle's are in front of the trigger; the hand cannon's "clip" is a speed loader floating
+  behind the gun, the pump's a shell under the receiver, the crossbow's a small wedge (all three
+  need the arm skeleton to place: hidden), the minigun's is its barrel cluster (drawn fixed).
+  Reload state: cWeapon+0x764 reloading byte, +0x76C progress 0..1 (magnum: ~1.2 s).
+- **Muzzle effects**: none at the camera. Comparing a shot frame with a later one, a shot adds
+  only world-space sprites at the hit (an orange spark and blood, drawn with the scene's
+  perspective: already right in stereo) - there is no first-person muzzle flash in this PC build
+  (it would have belonged to the never-drawn GunArms rig). The screen-space sprites seen in some
+  frames are the "player hurt" blood on the screen. Nothing to move or hide.

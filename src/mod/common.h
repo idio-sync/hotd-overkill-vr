@@ -83,7 +83,7 @@ struct VrConfig {
     float gun_scale = 1.0f;      // mesh scale (1 = the game's size)
     bool aim_barrel = true;      // shots go along the barrel line, from the muzzle (0: from the controller, as in milestone 2)
     bool clip_anim = true;       // the magazine drops out and back in on reload
-    float clip_drop = 0.15f;     // how far it drops, metres
+    float clip_drop = 0.2f;      // how far it drops, metres
     float gun_light = 1.0f;      // brightness of the gun's lighting
     float gun_face_sign = 1.0f;  // which side of the mesh's triangles faces out (lighting); -1 flips
 };
@@ -123,6 +123,7 @@ void gunmodel_load_config();  // per-weapon [vr] keys: show_, clip_, grip_, barr
 void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9* dev, int eye, vr::Mat4* world_to_clip));
 bool gunmodel_barrel(const vr::Mat4& hand_lh, vr::Ray* cam_ray);  // the barrel line in camera space (metres), if a model is shown
 void gunmodel_reset();       // device reset: drop our D3D objects
+void gunmodel_frame();       // once per Present: drop the models when the level ends
 void gunmodel_log();         // `vr gunmodel`
 void gunmodel_enable(bool on);
 void gunmodel_force_clip(float out);  // dev: magazine out fraction (-1: from the reload state)

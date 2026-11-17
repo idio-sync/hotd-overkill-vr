@@ -120,6 +120,7 @@ struct Mesh {
     UINT nv = 0, stride = 0, nidx = 0;
     D3DFORMAT ifmt = D3DFMT_INDEX16;
     char name[64] = {};
+    uintptr_t vb_rec = 0;  // the engine's vertex buffer record: still holding vb = still loaded
 };
 
 struct Model {
@@ -127,6 +128,7 @@ struct Model {
     const WeaponDef* def = nullptr;
     Mesh gun, clip;
     bool has_clip = false;
+    uintptr_t data = 0;  // cWeapon+4 when resolved
 };
 
 static void release(Mesh& m) {
@@ -146,6 +148,8 @@ static uintptr_t rd(uintptr_t a) {
 }
 
 static bool heap_ptr(uintptr_t p) { return p >= 0x10000 && p < 0x7FFF0000 && !(p & 3); }
+// Pack data is not always aligned (the SMG's primitive groups sit at an odd offset).
+static bool pack_ptr(uintptr_t p) { return p >= 0x10000 && p < 0x7FFF0000; }
 
 // D3D objects behind pointers read from game memory: checked through their own methods under an
 // exception guard before we take a reference.
@@ -184,8 +188,8 @@ static bool resolve_mesh(uintptr_t actr, Mesh* out) {
     const uintptr_t name_p = rd(actr + 0x6C), node = rd(actr + 0x28);
     if (!safe_copy(out->name, name_p, sizeof out->name - 1)) return false;
     out->name[sizeof out->name - 1] = 0;
-    const uintptr_t mesh = heap_ptr(node) ? rd(node + 0xB0) : 0;
-    if (!heap_ptr(mesh)) return false;
+    const uintptr_t mesh = pack_ptr(node) ? rd(node + 0xB0) : 0;
+    if (!pack_ptr(mesh)) return false;
     const uint32_t nv = uint32_t(rd(mesh)), nidx = uint32_t(rd(mesh + 0x44));
     const uintptr_t vbr = rd(mesh + 4), ibr = rd(mesh + 0x48), groups = rd(mesh + 0x0C);
     uint32_t vrec[4] = {}, irec[5] = {};
@@ -203,12 +207,13 @@ static bool resolve_mesh(uintptr_t actr, Mesh* out) {
         logf("gun model: %s: the buffers are not the expected D3D objects", out->name);
         return false;
     }
+    out->vb_rec = vbr;
     out->vb = vb, out->ib = ib, out->nv = nv, out->stride = vrec[3], out->nidx = nidx, out->ifmt = id.Format;
     vb->AddRef();
     ib->AddRef();
     // Textures: diffuse, normal, specular.
-    const uintptr_t tl = heap_ptr(groups) ? rd(groups + 8) : 0;
-    const uint32_t nt = heap_ptr(tl) ? uint32_t(rd(tl - 4)) : 0;  // the list pointer points past its count
+    const uintptr_t tl = pack_ptr(groups) ? rd(groups + 8) : 0;
+    const uint32_t nt = pack_ptr(tl) ? uint32_t(rd(tl - 4)) : 0;  // the list pointer points past its count
     char line[256];
     int len = snprintf(line, sizeof line, "gun model: %s: %u verts (stride %u), %u indices, %u textures:", out->name, nv, vrec[3], nidx, nt);
     for (uint32_t k = 0; k < nt && k < 3; ++k) {
@@ -240,6 +245,7 @@ static uintptr_t instance_of(uintptr_t entity) {
 static Model resolve(uintptr_t weapon) {
     Model m;
     const uintptr_t data = rd(weapon + 4);
+    m.data = data;
     if (!heap_ptr(data)) return m;
     for (uintptr_t off = 0x28; off <= 0xC0; off += 4) {
         const uintptr_t e = rd(data + off);
@@ -287,6 +293,13 @@ static const Model* current_model(uintptr_t* weapon_out = nullptr) {
     if (weapon_out) *weapon_out = w;
     if (!heap_ptr(w)) return nullptr;
     auto it = g_models.find(w);
+    // A cached model whose weapon or buffers changed (a new weapon object at an old address, or
+    // the pack reloaded) is resolved again.
+    if (it != g_models.end() && (rd(w + 4) != it->second.data || (it->second.ok && rd(it->second.gun.vb_rec) != uintptr_t(it->second.gun.vb)))) {
+        release(it->second.gun), release(it->second.clip);
+        g_models.erase(it);
+        it = g_models.end();
+    }
     if (it == g_models.end()) {
         it = g_models.emplace(w, resolve(w)).first;
         if (it->second.ok)
@@ -294,6 +307,15 @@ static const Model* current_model(uintptr_t* weapon_out = nullptr) {
                  it->second.has_clip ? " with its magazine" : "");
     }
     return it->second.ok ? &it->second : nullptr;
+}
+
+// Once per Present: models are dropped when the level ends (menus, quitting, the next level).
+void gunmodel_frame() {
+    if (g_vr.mode == VrMode::off) return;
+    std::lock_guard lock(g_mx);
+    const bool level = game_state().level;
+    if (g_level_was && !level) release_all();
+    g_level_was = level;
 }
 
 // --- placement ---

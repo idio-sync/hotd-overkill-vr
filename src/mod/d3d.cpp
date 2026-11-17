@@ -287,6 +287,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
     }
     if (ini_int(L"gun_hook", 1)) install_gun_hooks();  // once; after SecuROM's start-up patching
     gun_frame();
+    gunmodel_frame();
     FrameRequests req = control_tick();
     stereo_present(dev, req);  // VR: hand-off, desktop mirror, submit
     if (req.shot) save_backbuffer(dev, req.shot_name);  // the back buffer still holds this frame
