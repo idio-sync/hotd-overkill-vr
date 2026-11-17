@@ -740,7 +740,10 @@ void stereo_frame_end() {
     if (g_frame_stereo && g_hud_drawn) ++g_frames_stereo;
     else ++g_frames_flat;
     // The next frame's mode.
+    const GameState prev = g_state;
     g_state = game_state();
+    if (g_vr.mode != VrMode::off && (prev.level != g_state.level || prev.cutscene != g_state.cutscene || prev.paused != g_state.paused))
+        logf("game state: level %d cutscene %d paused %d", int(g_state.level), int(g_state.cutscene), int(g_state.paused));
     g_frames_since_scene = g_scene_persp ? 0 : (std::min)(g_frames_since_scene + 1, 1 << 20);
     if (g_state.level && !g_level_was) g_recentre_pending = true;  // a level started
     g_level_was = g_state.level;

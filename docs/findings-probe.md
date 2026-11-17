@@ -105,3 +105,38 @@ findings-static.md. Everything below was observed in the running game unless mar
   "registered the session port" events (RDP session churn), so not certainly the mod's doing.
 - The game blurs/zooms the whole picture when the player is hit or dying; back-buffer shots taken
   then look smeared - check `vr scene` (the scene target itself) before suspecting stereo.
+
+## HUD panel, flat screen, hand-off (milestone 1 part 2, 2026-11-17)
+- **Game state** (memory diffs of menu, loadout, loading, intro cutscene, gameplay, pause, death):
+  `[0x99B770]` = cCutsceneControl (made with the level by cGameModeRunLevel, null in the front
+  end), +8 byte = cutscene mode (ActivateCutsceneMode node 0x514510; IsCutSceneRunning 0x57B420).
+  `[0x99B71C]` = cGameModeManager, +0x310 byte = paused (getter 0x58A520): 1 in the pause menu
+  *and* on the death screen. `[0x99B700]` = cGameSettings (+0x108 also 1 when paused).
+  `[[0x99B708]+0x24]` = player 1 (cPlayer). Loading screens: level set, no cutscene, not paused,
+  but no scene drawn - hence the frame-structure check too. At level start the cutscene flag rises
+  ~0.3 s after the level appears: entering stereo waits for 0.5 s of steady gameplay state.
+- **HUD**: after the composite draw the game draws ~8 3D ammo rounds (vs 3a5de9a696514b3a, DIP,
+  perspective, depth-tested) and ~100-200 sprites (DPUP quads, vs 1a10d46e76d587ab whose cWVP
+  places each quad; local coordinates). Then `SetRenderTarget(composite)` + z-clear, then the
+  back-buffer blit (ps f84d4ddc609b00b2, viewport x=122 1291x807). Blend modes seen on HUD sprites:
+  SRCALPHA/INVSRCALPHA (most) and DESTCOLOR/SRCCOLOR (a four-quad corner vignette). Forcing alpha
+  to accumulate for every draw turned the vignette into opaque black corners; alpha is now only
+  accumulated for "over" draws (multiplicative darkening is dropped from the panel).
+- **Crosshair**: three to four 50x50 (local) sprites placed on the cursor; the cursor at
+  `cPlayer+0x1BC/+0x1C0` is in the same space as the sprites' clip x*w/2, y*h/2 (composite
+  pixels from the centre, +y up). Skipping sprites whose transformed quad centres on it (within
+  2 px, smaller than 200 px) removes the reticle (1 draw per frame in the kitchen).
+- **Hand-off options**: (b) a shared handle on the plain D3D9 device fails: `CreateTexture(...,
+  &handle)` → D3DERR_INVALIDCALL (0x8876086c). (a) 9Ex works: Direct3DCreate9Ex + CreateDeviceEx
+  (windowed), D3D11 device on the same adapter (LUID → DXGI adapter 0, R9700). The game creates
+  1526 MANAGED textures, 27 MANAGED cube textures, 832 VBs and 830 IBs by the first fight (no
+  volume textures); all became DEFAULT. Texture locks are staged through a SYSTEMMEM surface +
+  UpdateSurface; ~1 lock per frame continues all the time (some per-frame texture update) and
+  costs nothing visible. Rendering looked identical (menus, loadout, levels).
+- **Cost** (sim, RDP, 1280x720 eyes, first kitchen fight, uncapped, stereo frames only, 5 s
+  windows): plain D3D9 (handoff=0) 197-203 fps (~5.0 ms); 9Ex + hand-off (eye/HUD copies into
+  shared textures, event-query wait 0.85 ms, D3D11 copies) 190-197 fps (~5.2 ms): about +0.2 ms
+  a frame. Both include the desktop mirror. Flat gameplay with 9Ex (limiter poked off): 225 fps.
+- **Pitfall**: `readable()` (VirtualQuery) costs ~0.2 ms in this process (it walks the page table
+  of the huge heap regions to size them): calling it per HUD sprite took gameplay to 10 fps. Per
+  frame or per draw reads use `safe_copy` (SEH) now.
