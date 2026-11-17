@@ -3,8 +3,10 @@
 //
 // - Buttons become the game's own mouse/keyboard input through the DirectInput state the mod
 //   already injects (dinput.cpp; the game reads mouse buttons and keys with GetDeviceState):
-//   trigger = fire (held for automatic weapons), [vr] btn_reload / btn_switch / btn_pause = the
-//   game inputs game_reload / game_switch / game_pause; btn_recentre held for a second recentres.
+//   trigger = fire (held for automatic weapons), [vr] btn_reload / btn_switch / btn_grenade /
+//   btn_pause = the game inputs game_reload / game_switch / game_grenade / game_pause (defaults: the
+//   game's own PC controls - middle click reload, TAB swap weapon, right click grenade, Escape
+//   pause); btn_recentre held for a second recentres.
 //   Optional reload_gesture: pulling the trigger while pointing far away from where you look
 //   reloads instead of firing, like a light gun pointed off-screen.
 // - Flat frames (menus, loadout, pause, death screen, cutscenes): the gun's ray against the flat
@@ -186,6 +188,7 @@ void input_frame() {
     // Other actions.
     static Action actions[] = {{"reload", &g_vr.btn_reload, &g_vr.game_reload},
                                {"switch weapon", &g_vr.btn_switch, &g_vr.game_switch},
+                               {"grenade", &g_vr.btn_grenade, &g_vr.game_grenade},
                                {"pause", &g_vr.btn_pause, &g_vr.game_pause}};
     for (Action& a : actions) {
         const bool d = binding_down(*a.buttons, gun, off);

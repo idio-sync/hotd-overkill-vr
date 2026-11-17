@@ -74,8 +74,8 @@ Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder.
 | `haptics` | `1.0` | shot pulse strength (`0` = off); shotguns and the hand cannon pulse longer |
 | `marker` | `0` | `1`: a small red dot in the eyes where the shot will land (yellow: the ray hit nothing within range, dot at 10 m). No laser |
 | `reload_gesture` | `0` | `1`: pulling the trigger while the gun points more than `reload_gesture_deg` (60) degrees away from where you look reloads, like a light gun pointed off-screen |
-| `btn_reload`, `btn_switch`, `btn_pause`, `btn_recentre` | `gun.a,gun.grip`, `gun.b`, `off.b,off.a`, `gun.stick` | controller buttons for each action: `gun.` (the gun hand) or `off.` (the other hand) + `a` (A/X), `b` (B/Y: SteamVR's application-menu button), `grip`, `stick` (stick click), `trigger`; a comma means either. Recentre fires after holding for a second |
-| `game_fire`, `game_reload`, `game_switch`, `game_pause` | `lmb`, `rmb`, `wheeldown`, `ESCAPE` | what each action sends to the game: `lmb`, `rmb`, `mmb`, `wheelup`, `wheeldown`, or a key name (`RETURN`, `SPACE`, `A`-`Z`, `0`-`9`, `F1`..., `0xNN`) |
+| `btn_reload`, `btn_switch`, `btn_grenade`, `btn_pause`, `btn_recentre` | `gun.a`, `gun.b`, `gun.grip`, `off.b,off.a`, `gun.stick` | controller buttons for each action: `gun.` (the gun hand) or `off.` (the other hand) + `a` (A/X), `b` (B/Y: SteamVR's application-menu button), `grip`, `stick` (stick click), `trigger`; a comma means either. Recentre fires after holding for a second |
+| `game_fire`, `game_reload`, `game_switch`, `game_grenade`, `game_pause` | `lmb`, `mmb`, `TAB`, `rmb`, `ESCAPE` | what each action sends to the game: `lmb`, `rmb`, `mmb`, `wheelup`, `wheeldown`, or a key name (`RETURN`, `SPACE`, `TAB`, `A`-`Z`, `0`-`9`, `F1`..., `0xNN`). The defaults are the game's own PC controls (Game Settings > Controls: left click fire, middle click reload, right click grenade, wheel or TAB swap weapon, Esc pause) |
 | `sim_hand` | `0.15,-0.25,-0.35` | sim only: gun hand position relative to the head, metres |
 | `sim_hand_yaw`, `sim_hand_pitch` | `0` | sim only: gun hand direction relative to the head, degrees |
 
@@ -84,8 +84,9 @@ Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder.
 | controller | game |
 |---|---|
 | gun trigger | fire (hold for automatic weapons); in menus: click where the gun points |
-| gun A (A/X), gun grip | reload |
+| gun A (A/X) | reload |
 | gun B (B/Y) | switch weapon |
+| gun grip | grenade |
 | other hand's B or A (Y/X) | pause menu (Escape) |
 | gun stick click, held 1 s | recentre the view |
 | point at the flat screen | moves the menu cursor |
@@ -163,8 +164,9 @@ controllers are expected to report as `oculus_quest2` with the tip about 40 degr
    a bug, not a setting).
 3. **Without the marker**: `marker=0` (the default). Can you aim by the gun alone? (Milestone 3
    adds the gun model; until then there is nothing drawn at your hand.)
-4. **Buttons**: trigger fires (hold it with an automatic weapon if you have one); A or grip reloads
-   (the HUD's rounds refill); B switches weapon (only with two weapons equipped in the loadout);
+4. **Buttons**: trigger fires (hold it with an automatic weapon if you have one); A reloads (the
+   HUD's rounds refill); grip throws a grenade (if you have one; it should land where the gun
+   points); B switches weapon (only with two weapons equipped in the loadout);
    Y/X opens the pause menu, and in the pause menu pointing + trigger works. Holding the right stick
    click for a second recentres the view.
 5. **Haptics**: a short buzz on every shot, longer for shotguns and the hand cannon. Too strong or

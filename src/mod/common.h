@@ -71,8 +71,11 @@ struct VrConfig {
     float sim_hand_yaw = 0, sim_hand_pitch = 0;    // sim hand direction relative to the head, degrees
     // Controller buttons ("gun.a", "off.b", ...; comma-separated alternatives) and the game input
     // each one sends ("lmb", "rmb", "mmb", "wheelup", "wheeldown", or a key name).
-    std::string btn_reload = "gun.a,gun.grip", btn_switch = "gun.b", btn_pause = "off.b,off.a", btn_recentre = "gun.stick";
-    std::string game_fire = "lmb", game_reload = "rmb", game_switch = "wheeldown", game_pause = "ESCAPE";
+    // The game's own PC controls (its Controls screen): left click fire, middle click reload, right
+    // click grenade, mouse wheel or TAB swap weapon, Escape pause.
+    std::string btn_reload = "gun.a", btn_switch = "gun.b", btn_grenade = "gun.grip", btn_pause = "off.b,off.a",
+                btn_recentre = "gun.stick";
+    std::string game_fire = "lmb", game_reload = "mmb", game_switch = "TAB", game_grenade = "rmb", game_pause = "ESCAPE";
 };
 extern VrConfig g_vr;
 void load_vr_config();
@@ -96,6 +99,7 @@ void gun_capture_next();
 // The last aim point (world, game units) and whether the ray hit the scene; false: no aim.
 bool gun_aim_point(float out[3], bool* hit);
 void gun_request_handat(float cursor_x, float cursor_y);  // sim: aim the hand at what the camera sees at a cursor
+void gun_request_handseek();  // sim: aim the hand at the shootable thing nearest the view's centre
 void gun_log_state();      // `vr gun`: weapon, ammo, aim
 bool gun_aim_active();     // the controller drives player 1's aim now
 void gun_log_actions(bool on);  // dev: log the game's input action values as they change

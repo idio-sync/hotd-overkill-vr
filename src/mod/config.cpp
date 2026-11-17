@@ -33,13 +33,16 @@
 //   marker    = 0                    1: a small dot in the eyes where the shot will land
 //   reload_gesture = 0               1: pulling the trigger while pointing more than reload_gesture_deg
 //   reload_gesture_deg = 60          (degrees) away from where you look reloads, like a light gun off-screen
-//   btn_reload = gun.a,gun.grip      controller buttons for the game's actions: gun. (the gun hand) or
+//   btn_reload = gun.a               controller buttons for the game's actions: gun. (the gun hand) or
 //   btn_switch = gun.b               off. (the other hand) + a | b | grip | stick | trigger; a = A/X,
-//   btn_pause  = off.b,off.a         b = B/Y (SteamVR's application-menu button); comma = either
+//   btn_grenade = gun.grip           b = B/Y (SteamVR's application-menu button); comma = either
+//   btn_pause  = off.b,off.a
 //   btn_recentre = gun.stick         held for a second: recentre the view
-//   game_fire = lmb, game_reload = rmb, game_switch = wheeldown, game_pause = ESCAPE
+//   game_fire = lmb, game_reload = mmb, game_switch = TAB, game_grenade = rmb, game_pause = ESCAPE
 //                                    what each action sends to the game (lmb, rmb, mmb, wheelup,
-//                                    wheeldown, or a key name: RETURN, SPACE, A-Z, 0-9, F1..., 0xNN)
+//                                    wheeldown, or a key name: RETURN, SPACE, TAB, A-Z, 0-9, F1..., 0xNN).
+//                                    The defaults are the game's own PC controls (its Controls screen:
+//                                    middle click reload, wheel/TAB swap weapon, right click grenade).
 //   sim_hand  = 0.15,-0.25,-0.35     sim hand position relative to the head, metres (x right, y up, z back)
 //   sim_hand_yaw = 0, sim_hand_pitch = 0   sim hand direction relative to the head, degrees
 #include "common.h"
@@ -144,6 +147,8 @@ void load_vr_config() {
     c.btn_reload = ini_ascii(L"btn_reload", c.btn_reload);
     c.btn_switch = ini_ascii(L"btn_switch", c.btn_switch);
     c.btn_pause = ini_ascii(L"btn_pause", c.btn_pause);
+    c.btn_grenade = ini_ascii(L"btn_grenade", c.btn_grenade);
+    c.game_grenade = ini_ascii(L"game_grenade", c.game_grenade);
     c.btn_recentre = ini_ascii(L"btn_recentre", c.btn_recentre);
     c.game_fire = ini_ascii(L"game_fire", c.game_fire);
     c.game_reload = ini_ascii(L"game_reload", c.game_reload);
@@ -159,9 +164,9 @@ void load_vr_config() {
     logf("vr: aim=%d hand=%s hand_pitch=%.1f hand_offset=%.3f,%.3f,%.3f haptics=%.2f marker=%d reload_gesture=%d (%.0f deg)", int(c.aim),
          c.left_hand ? "left" : "right", c.hand_pitch, c.hand_offset[0], c.hand_offset[1], c.hand_offset[2], c.haptics, int(c.marker),
          int(c.reload_gesture), c.reload_gesture_deg);
-    logf("vr: buttons reload=%s switch=%s pause=%s recentre=%s; game fire=%s reload=%s switch=%s pause=%s", c.btn_reload.c_str(),
-         c.btn_switch.c_str(), c.btn_pause.c_str(), c.btn_recentre.c_str(), c.game_fire.c_str(), c.game_reload.c_str(),
-         c.game_switch.c_str(), c.game_pause.c_str());
+    logf("vr: buttons reload=%s switch=%s grenade=%s pause=%s recentre=%s; game fire=%s reload=%s switch=%s grenade=%s pause=%s",
+         c.btn_reload.c_str(), c.btn_switch.c_str(), c.btn_grenade.c_str(), c.btn_pause.c_str(), c.btn_recentre.c_str(), c.game_fire.c_str(),
+         c.game_reload.c_str(), c.game_switch.c_str(), c.game_grenade.c_str(), c.game_pause.c_str());
 }
 
 }  // namespace hv

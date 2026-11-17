@@ -43,6 +43,8 @@
 //   vr handat X Y           sim: point the hand at what the game camera sees through cursor X, Y
 //                           (the game's cursor space: composite pixels from the centre, +y up)
 //   vr handscreen X Y       sim: point the hand at back-buffer pixel X, Y of the flat screen
+//   vr handseek             sim: point the hand at the shootable entity (zombie) nearest the view's
+//                           centre, found by ray casting a grid of the game camera's view
 //   vr hand off             sim: the hand stops driving the menu cursor (`vr hand*` turns it on)
 //   vr btn NAME [MS]        sim controller button press (trigger, a, b, grip, stick; off.NAME for
 //                           the other hand), default 120 ms, then wait 200 ms
@@ -309,6 +311,9 @@ FrameRequests control_tick() {
                 g_dbg = atoi(a.c_str());
             } else if (what == "crosshair") {
                 g_vr.crosshair = v != 0;
+            } else if (what == "handseek") {
+                input_sim_pointer(true);
+                gun_request_handseek();
             } else if (what == "hand" || what == "handpos" || what == "handat" || what == "handscreen") {
                 std::string b, c;
                 ss >> b >> c;

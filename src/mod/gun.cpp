@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 #include "../vr/aim.h"
 
@@ -145,8 +146,27 @@ static int seh_raycast(const float* org, const float* seg, uint8_t* res) {
     }
 }
 
+// What a ray cast hit (FireBullets: 0x48C8D0 on the result gives the entity, its vtable slot
+// 0x154 says whether it takes shots - zombies, props).
+struct HitInfo {
+    uintptr_t entity = 0, vtable = 0;
+    bool shootable = false;
+};
+static void seh_entity(uint8_t* res, HitInfo* out) {
+    __try {
+        using Entity_t = uintptr_t(__fastcall*)(void* res, void* edx);
+        using Bool_t = bool(__fastcall*)(void* self, void* edx);
+        out->entity = reinterpret_cast<Entity_t>(va(0x48C8D0))(res, nullptr);
+        if (!out->entity) return;
+        out->vtable = *reinterpret_cast<const uintptr_t*>(out->entity);
+        out->shootable = reinterpret_cast<Bool_t>(*reinterpret_cast<const uintptr_t*>(out->vtable + 0x154))(reinterpret_cast<void*>(out->entity), nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out->shootable = false;
+    }
+}
+
 // The game's own world ray cast (as FireBullets uses it): the first hit along o + d * range.
-static bool cast_ray(const float o[3], const float d[3], float range, float hit[3]) {
+static bool cast_ray(const float o[3], const float d[3], float range, float hit[3], HitInfo* info = nullptr) {
     alignas(16) float org[4] = {o[0], o[1], o[2], 1};
     alignas(16) float seg[4] = {d[0] * range, d[1] * range, d[2] * range, 1};
     alignas(16) uint8_t res[0x80] = {};
@@ -158,6 +178,7 @@ static bool cast_ray(const float o[3], const float d[3], float range, float hit[
     }
     if (!r) return false;
     memcpy(hit, res, 12);
+    if (info) seh_entity(res, info);
     return true;
 }
 
@@ -177,7 +198,7 @@ struct Aim {
 };
 static std::mutex g_aim_mx;
 static Aim g_aim;
-static std::atomic<bool> g_handat_pending;
+static std::atomic<bool> g_handat_pending, g_seek_pending;
 static float g_handat[2];
 static std::atomic<int> g_hooks_installed;
 static std::atomic<bool> g_god;  // dev `vr god 1`: player 1's health (player+0x20C, 10 = full) kept full
@@ -224,6 +245,46 @@ void gun_request_handat(float x, float y) {
     g_handat_pending = true;
 }
 
+// Sim `vr handseek`: scan the camera's view (a grid of cursors) with the game's ray cast, take the
+// shootable entity nearest the screen centre, and aim the hand at the middle of its hit cells.
+static void do_handseek(uintptr_t player) {
+    float base[3], du[3], dv[3], o[4];
+    if (!unproject_basis(base, du, dv) || !safe_copy(o, player + 0x1E0, 16)) return;
+    const float range = weapon_range(player);
+    struct Cell {
+        uintptr_t entity;
+        float x, y;
+    };
+    std::vector<Cell> cells;
+    for (float y = -360; y <= 360; y += 30)
+        for (float x = -600; x <= 600; x += 30) {
+            float d[3];
+            for (int i = 0; i < 3; ++i) d[i] = base[i] + x * du[i] + y * dv[i] - o[i];
+            const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            for (float& c : d) c /= n;
+            float hit[3];
+            HitInfo info;
+            if (cast_ray(o, d, range, hit, &info) && info.shootable) cells.push_back({info.entity, x, y});
+        }
+    uintptr_t best = 0;
+    float best_r = 1e9f;
+    for (const Cell& c : cells)
+        if (c.x * c.x + c.y * c.y < best_r) best_r = c.x * c.x + c.y * c.y, best = c.entity;
+    if (!best) {
+        logf("vr handseek: nothing shootable in view (%zu cells hit)", cells.size());
+        return;
+    }
+    float sx = 0, sy = 0;
+    int n = 0;
+    for (const Cell& c : cells)
+        if (c.entity == best) sx += c.x, sy += c.y, ++n;
+    logf("vr handseek: entity %p (%d grid cells) centred at cursor %.0f %.0f", reinterpret_cast<void*>(best), n, sx / n, sy / n);
+    g_handat[0] = sx / n, g_handat[1] = sy / n;
+    do_handat(player);
+}
+
+void gun_request_handseek() { g_seek_pending = true; }
+
 // Once per game frame (lazily, from the cursor setters): the hand's ray, where it meets the scene,
 // and the cursor that projects there.
 static void aim_update(uintptr_t player) {
@@ -233,6 +294,7 @@ static void aim_update(uintptr_t player) {
         if (g_aim.frame == frame) return;
     }
     if (g_handat_pending.exchange(false)) do_handat(player);
+    if (g_seek_pending.exchange(false)) do_handseek(player);
     Aim a;
     a.frame = frame;
     if (gun_aim_active() && hand_world_ray(&a.ray)) {
@@ -315,9 +377,21 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
     if (player_shot && gun_aim_active() && hand_world_ray(&r)) {
         float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
         if (len <= 0) len = 1;
-        if (logged < 400)
-            logf("shot: game origin %.1f %.1f %.1f dir %.4f %.4f %.4f -> hand origin %.1f %.1f %.1f dir %.4f %.4f %.4f", origin[0],
-                 origin[1], origin[2], dir[0] / len, dir[1] / len, dir[2] / len, r.o[0], r.o[1], r.o[2], r.d[0], r.d[1], r.d[2]);
+        if (logged < 400) {
+            // What the game's ray cast will meet along the hand's ray (before spread).
+            float hit[3];
+            HitInfo info;
+            const bool h = cast_ray(r.o, r.d, weapon_range(owner), hit, &info);
+            const float dist = h ? std::sqrt((hit[0] - r.o[0]) * (hit[0] - r.o[0]) + (hit[1] - r.o[1]) * (hit[1] - r.o[1]) +
+                                             (hit[2] - r.o[2]) * (hit[2] - r.o[2]))
+                                 : 0;
+            logf("shot: game origin %.1f %.1f %.1f dir %.4f %.4f %.4f -> hand origin %.1f %.1f %.1f dir %.4f %.4f %.4f; ray %s", origin[0],
+                 origin[1], origin[2], dir[0] / len, dir[1] / len, dir[2] / len, r.o[0], r.o[1], r.o[2], r.d[0], r.d[1], r.d[2],
+                 !h ? "hits nothing" : info.shootable ? "hits a shootable entity" : info.entity ? "hits an entity (not shootable)" : "hits the scene");
+            if (h)
+                logf("  hit at %.1f %.1f %.1f (%.2f m from the hand), entity %p vtable %p", hit[0], hit[1], hit[2], dist * g_vr.unit_m,
+                     reinterpret_cast<void*>(info.entity), reinterpret_cast<void*>(info.vtable));
+        }
         for (int i = 0; i < 3; ++i) dir[i] = r.d[i] * len, own[i] = r.o[i];
         use_origin = own;
     } else if (logged < 400) {

@@ -1,0 +1,32 @@
+# Like to_gameplay.txt, but every menu click is the sim gun hand pointed at the flat screen
+# (`vr handscreen X Y`: back-buffer pixel X, Y) and its trigger pulled; cutscenes are skipped with
+# the pause button (off.b -> Escape). Boot -> main menu -> House of the Dead: Overkill -> Story ->
+# Papa's Palace of Pain -> Start -> first kitchen fight. Needs mode=sim.
+wait 30000
+vr handscreen 1150 690
+wait 500
+vr btn trigger
+wait 4000
+vr handscreen 330 686
+wait 300
+vr btn trigger
+wait 3000
+vr handscreen 256 560
+wait 300
+vr btn trigger
+wait 1500
+vr handscreen 770 684
+wait 300
+vr btn trigger
+wait 4000
+vr handscreen 1212 742
+wait 300
+vr btn trigger
+wait 25000
+vr btn off.b
+wait 15000
+# the intro has a second cutscene
+vr btn off.b
+wait 16000
+vr hand 0 0
+log at gameplay
