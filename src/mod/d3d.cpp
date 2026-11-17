@@ -181,6 +181,9 @@ HRESULT raw_set_rs(IDirect3DDevice9* dev, D3DRENDERSTATETYPE st, DWORD v) { retu
 HRESULT raw_dpup(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT n, const void* v, UINT stride) {
     return o_DrawPrimitiveUP(dev, t, n, v, stride);
 }
+HRESULT raw_dip(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minv, UINT nv, UINT si, UINT n) {
+    return o_DrawIndexedPrimitive(dev, t, base, minv, nv, si, n);
+}
 HRESULT raw_clear(IDirect3DDevice9* dev, DWORD n, const D3DRECT* r, DWORD flags, D3DCOLOR c, float z, DWORD st) {
     return o_Clear(dev, n, r, flags, c, z, st);
 }
@@ -495,6 +498,7 @@ static HRESULT STDMETHODCALLTYPE hk_StretchRect(IDirect3DDevice9* dev, IDirect3D
 }
 
 static HRESULT STDMETHODCALLTYPE hk_SetRenderTarget(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9* s) {
+    if (index == 0) stereo_before_rt(dev, s);    // the gun model, at the end of the scene's opaque pass
     if (index == 0) s = stereo_redirect_rt(s);  // HUD redirection (stereo.cpp)
     if (index == 0) g_rt0 = s;
     if (g_frame) {
@@ -634,8 +638,70 @@ static HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIM
     DpArgs a{dev, t, start, n};
     return stereo_draw(dev, run_dp, &a);
 }
+// `drawstack HASH [N]` (dev): for the next N indexed draws with vertex shader HASH, log a heuristic
+// call stack (stack dwords that are return addresses into the exe: preceded by a call) and the
+// bound streams, to find the engine code that issues them.
+static uint64_t g_stack_vs;
+static int g_stack_left;
+void request_drawstack(uint64_t vs_hash, int n) {
+    g_stack_vs = vs_hash;
+    g_stack_left = n;
+}
+
+static bool is_call_return(uintptr_t a) {
+    const uintptr_t base = exe_base();
+    if (a < base + 0x1000 || a >= base + 0x420000) return false;
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(a);
+    return p[-5] == 0xE8 || (p[-2] == 0xFF && (p[-1] & 0x38) == 0x10) || (p[-3] == 0xFF && (p[-2] & 0x38) == 0x10) ||
+           (p[-6] == 0xFF && (p[-5] & 0x38) == 0x10) || (p[-7] == 0xFF && (p[-6] & 0x38) == 0x10);
+}
+
+static void log_drawstack(IDirect3DDevice9* dev, UINT nv, UINT n, INT base, UINT si) {
+    uintptr_t sp = reinterpret_cast<uintptr_t>(&sp);
+    NT_TIB* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+    const uintptr_t top = reinterpret_cast<uintptr_t>(tib->StackBase);
+    IDirect3DVertexBuffer9* vb = nullptr;
+    IDirect3DIndexBuffer9* ib = nullptr;
+    IDirect3DVertexDeclaration9* decl = nullptr;
+    UINT off = 0, stride = 0;
+    dev->GetStreamSource(0, &vb, &off, &stride);
+    dev->GetIndices(&ib);
+    dev->GetVertexDeclaration(&decl);
+    D3DVERTEXBUFFER_DESC vd{};
+    D3DINDEXBUFFER_DESC id{};
+    if (vb) vb->GetDesc(&vd);
+    if (ib) ib->GetDesc(&id);
+    logf("drawstack vs %016llx ps %016llx: DIP nv %u prims %u base %d start %u; vb %p (%u bytes) off %u stride %u ib %p (%u bytes fmt %d) decl %p",
+         hash_of(g_vs), hash_of(g_ps), nv, n, base, si, vb, vd.Size, off, stride, ib, id.Size, int(id.Format), decl);
+    for (DWORD s = 0; s < 8; ++s) {
+        IDirect3DBaseTexture9* t = nullptr;
+        dev->GetTexture(s, &t);
+        if (!t) continue;
+        D3DSURFACE_DESC d{};
+        if (t->GetType() == D3DRTYPE_TEXTURE) static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d);
+        logf("  texture %lu: %p type %d %ux%u %s", s, t, int(t->GetType()), d.Width, d.Height, fmt_name(d.Format));
+        t->Release();
+    }
+    if (vb) vb->Release();
+    if (ib) ib->Release();
+    if (decl) decl->Release();
+    int found = 0;
+    for (uintptr_t p = sp; p + 4 <= top && p < sp + 0x4000 && found < 24; p += 4) {
+        const uintptr_t v = *reinterpret_cast<const uintptr_t*>(p);
+        if (!is_call_return(v)) continue;
+        const uintptr_t* a = reinterpret_cast<const uintptr_t*>(p + 4);
+        logf("  [sp+%04x] ret %08x  next %08x %08x %08x %08x", unsigned(p - sp), unsigned(v - exe_base() + 0x400000), unsigned(a[0]),
+             unsigned(a[1]), unsigned(a[2]), unsigned(a[3]));
+        ++found;
+    }
+}
+
 static HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minv, UINT nv, UINT si, UINT n) {
     log_draw("DIP", n);
+    if (g_stack_left > 0 && hash_of(g_vs) == g_stack_vs) {
+        --g_stack_left;
+        log_drawstack(dev, nv, n, base, si);
+    }
     ++g_draws;
     DipArgs a{dev, t, base, minv, nv, si, n};
     return stereo_draw(dev, run_dip, &a);

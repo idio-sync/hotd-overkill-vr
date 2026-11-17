@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "../vr/aim.h"
 #include "../vr/stereo.h"
 
 struct ID3D11Texture2D;
@@ -76,10 +77,20 @@ struct VrConfig {
     std::string btn_reload = "gun.a", btn_switch = "gun.b", btn_grenade = "gun.grip", btn_pause = "off.b,off.a",
                 btn_recentre = "gun.stick";
     std::string game_fire = "lmb", game_reload = "mmb", game_switch = "TAB", game_grenade = "rmb", game_pause = "ESCAPE";
+    // The weapon model (milestone 3, gunmodel.cpp); per-weapon keys are read by gunmodel_load_config.
+    bool gun_model = true;       // draw the game's own gun mesh in the hand
+    float gun_grip[3] = {0, -0.03f, 0.05f};  // where the mesh's grip point sits in the controller's frame, metres (x right, y up, z back)
+    float gun_scale = 1.0f;      // mesh scale (1 = the game's size)
+    bool aim_barrel = true;      // shots go along the barrel line, from the muzzle (0: from the controller, as in milestone 2)
+    bool clip_anim = true;       // the magazine drops out and back in on reload
+    float clip_drop = 0.15f;     // how far it drops, metres
+    float gun_light = 1.0f;      // brightness of the gun's lighting
+    float gun_face_sign = 1.0f;  // which side of the mesh's triangles faces out (lighting); -1 flips
 };
 extern VrConfig g_vr;
 void load_vr_config();
 const char* mode_name(VrMode m);
+bool vr_ini_floats(const char* key, float* out, int n);  // [vr] KEY = a,b,c...: true if n numbers were read
 
 void install_folder_hook();   // SHGetFolderPathA(APPDATA) -> hovr\AppData
 void install_window_hooks();  // minimized window, faked activation and cursor
@@ -104,6 +115,19 @@ void gun_log_state();      // `vr gun`: weapon, ammo, aim
 bool gun_aim_active();     // the controller drives player 1's aim now
 void gun_log_actions(bool on);  // dev: log the game's input action values as they change
 void gun_set_god(bool on);  // dev: keep player 1's health full (tests that need time in gameplay)
+
+// The weapon model (gunmodel.cpp).
+void gunmodel_load_config();  // per-weapon [vr] keys: show_, clip_, grip_, barrel_, muzzle_, hold_<weapon>
+// Draws the current weapon's mesh in both eyes; called by stereo.cpp with the scene target bound.
+// eye_setup sets an eye's viewport and gives its world -> clip matrix.
+void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9* dev, int eye, vr::Mat4* world_to_clip));
+bool gunmodel_barrel(const vr::Mat4& hand_lh, vr::Ray* cam_ray);  // the barrel line in camera space (metres), if a model is shown
+void gunmodel_reset();       // device reset: drop our D3D objects
+void gunmodel_log();         // `vr gunmodel`
+void gunmodel_enable(bool on);
+void gunmodel_force_clip(float out);  // dev: magazine out fraction (-1: from the reload state)
+void gunmodel_barrel_line(bool on);   // dev: draw the barrel line to the aim point
+void gunmodel_set(const std::string& key, const std::string& field, const float* v, int n);  // `vr gunset`
 
 // Controller input (vrinput.cpp): buttons -> the game's DirectInput, menu pointing, haptics.
 enum CtlButton : uint32_t { kBtnTrigger = 1, kBtnA = 2, kBtnB = 4, kBtnGrip = 8, kBtnStick = 16 };
@@ -201,6 +225,8 @@ using DrawFn = HRESULT (*)(void* ctx);
 HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx, const void* up = nullptr, UINT stride = 0, UINT prims = 0);
 // HUD redirection (gameplay frames): what the game draws on the composite target after the
 // composite draw goes to our HUD texture instead.
+// Before the game sets render target 0 to `next`: the end of the scene's opaque pass draws the gun.
+void stereo_before_rt(IDirect3DDevice9* dev, IDirect3DSurface9* next);
 IDirect3DSurface9* stereo_redirect_rt(IDirect3DSurface9* s);
 IDirect3DSurface9* stereo_redirect_depth(IDirect3DSurface9* s);
 bool stereo_hud_rs(D3DRENDERSTATETYPE s, DWORD v);  // true: swallowed while the HUD is redirected
@@ -228,6 +254,7 @@ HRESULT raw_set_vs(IDirect3DDevice9* dev, IDirect3DVertexShader9* s);
 HRESULT raw_set_ps(IDirect3DDevice9* dev, IDirect3DPixelShader9* s);
 HRESULT raw_set_rs(IDirect3DDevice9* dev, D3DRENDERSTATETYPE s, DWORD v);
 HRESULT raw_dpup(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT n, const void* v, UINT stride);
+HRESULT raw_dip(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minv, UINT nv, UINT si, UINT n);
 HRESULT raw_clear(IDirect3DDevice9* dev, DWORD n, const D3DRECT* r, DWORD flags, D3DCOLOR c, float z, DWORD st);
 HRESULT raw_stretch(IDirect3DDevice9* dev, IDirect3DSurface9* src, const RECT* sr, IDirect3DSurface9* dst, const RECT* dr,
                     D3DTEXTUREFILTERTYPE f);
@@ -238,6 +265,7 @@ HRESULT raw_create_rt(IDirect3DDevice9* dev, UINT w, UINT h, D3DFORMAT f, IDirec
 const float* vs_shadow(UINT reg);  // the game's last value of a vertex shader constant register
 IDirect3DVertexShader9* current_vs();
 IDirect3DPixelShader9* current_ps();
+void request_drawstack(uint64_t vs_hash, int n);  // dev `drawstack`: log call stacks of draws with that vertex shader
 void frame_note(const char* text);  // a line in the frame log, if one is being written
 bool frame_logging();
 

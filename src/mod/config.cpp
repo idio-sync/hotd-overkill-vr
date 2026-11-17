@@ -85,6 +85,25 @@ static float ini_float(const wchar_t* key, float def) {
     return end == s.c_str() ? def : float(v);
 }
 
+bool vr_ini_floats(const char* key, float* out, int n) {
+    std::wstring k(key, key + strlen(key));
+    std::wstring s = ini_str(k.c_str(), L"");
+    float t[8];
+    if (s.empty() || n > 8) return false;
+    int got = 0;
+    for (const wchar_t* p = s.c_str(); got < n && *p;) {
+        wchar_t* end = nullptr;
+        const double v = wcstod(p, &end);
+        if (end == p) break;
+        t[got++] = float(v);
+        p = end;
+        while (*p == L',' || *p == L' ') ++p;
+    }
+    if (got != n) return false;
+    for (int i = 0; i < n; ++i) out[i] = t[i];
+    return true;
+}
+
 const char* mode_name(VrMode m) {
     switch (m) {
         case VrMode::sim: return "sim";
@@ -154,8 +173,21 @@ void load_vr_config() {
     c.game_reload = ini_ascii(L"game_reload", c.game_reload);
     c.game_switch = ini_ascii(L"game_switch", c.game_switch);
     c.game_pause = ini_ascii(L"game_pause", c.game_pause);
+    c.gun_model = ini_float(L"gun_model", 1) != 0;
+    ini_vec3(L"gun_grip", c.gun_grip);
+    c.gun_scale = ini_float(L"gun_scale", c.gun_scale);
+    if (c.gun_scale <= 0.1f || c.gun_scale > 10) c.gun_scale = 1;
+    c.aim_barrel = ini_float(L"aim_barrel", 1) != 0;
+    c.clip_anim = ini_float(L"clip_anim", 1) != 0;
+    c.clip_drop = ini_float(L"clip_drop", c.clip_drop);
+    c.gun_light = ini_float(L"gun_light", c.gun_light);
+    c.gun_face_sign = ini_float(L"gun_face_sign", c.gun_face_sign) < 0 ? -1.f : 1.f;
     c.stereo = c.mode != VrMode::off;
     g_vr = c;
+    gunmodel_load_config();
+    logf("vr: gun_model=%d gun_grip=%.3f,%.3f,%.3f gun_scale=%.2f aim_barrel=%d clip_anim=%d clip_drop=%.2f gun_light=%.2f",
+         int(c.gun_model), c.gun_grip[0], c.gun_grip[1], c.gun_grip[2], c.gun_scale, int(c.aim_barrel), int(c.clip_anim), c.clip_drop,
+         c.gun_light);
     logf("vr: mode=%s ipd_m=%.4f unit_m=%.4f sim_yaw=%.1f sim_pitch=%.1f cone_deg=%.1f eye_res=%s%dx%d uncap=%d crosshair=%d",
          mode_name(c.mode), c.ipd_m, c.unit_m, c.sim_yaw_deg, c.sim_pitch_deg, c.cone_deg, c.eye_res_auto ? "auto " : "", c.eye_w,
          c.eye_h, int(c.uncap), int(c.crosshair));

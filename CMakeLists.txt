@@ -26,6 +26,7 @@ add_library(hovr SHARED
     src/mod/control.cpp
     src/mod/dinput.cpp
     src/mod/gun.cpp
+    src/mod/gunmodel.cpp
     src/mod/vrinput.cpp
     src/mod/files.cpp
     src/mod/audio_mute.cpp
@@ -37,7 +38,8 @@ add_library(hovr SHARED
     src/mod/vrsys.cpp
     src/vr/stereo.cpp
     src/vr/xform.cpp
-    src/vr/aim.cpp)
+    src/vr/aim.cpp
+    src/vr/gunpose.cpp)
 set_target_properties(hovr PROPERTIES OUTPUT_NAME XINPUT1_3)
 target_compile_definitions(hovr PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(hovr PRIVATE /W4 /wd4100 /utf-8)
@@ -53,6 +55,6 @@ add_custom_command(TARGET hovr POST_BUILD
 
 # Unit tests for the VR math (no game needed): ctest --test-dir out
 enable_testing()
-add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp)
+add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp src/vr/gunpose.cpp)
 target_compile_options(hovr_tests PRIVATE /W4 /utf-8)
 add_test(NAME stereo COMMAND hovr_tests)

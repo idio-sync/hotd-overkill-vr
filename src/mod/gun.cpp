@@ -210,10 +210,14 @@ bool gun_aim_active() {
     return vrsys_hand_in_game(&h) && game_state().gameplay;
 }
 
+// The shot ray: the barrel line of the gun model in the hand (muzzle origin, barrel direction) when
+// one is shown, otherwise the controller's own pointing ray.
 static bool hand_world_ray(vr::Ray* out) {
     vr::Mat4 hand, view;
     if (!vrsys_hand_in_game(&hand) || !read_view(&view)) return false;
-    return vr::camera_ray_to_world(view, vr::pose_ray_lh(hand), g_vr.unit_m, out);
+    vr::Ray cam;
+    if (!gunmodel_barrel(hand, &cam)) cam = vr::pose_ray_lh(hand);
+    return vr::camera_ray_to_world(view, cam, g_vr.unit_m, out);
 }
 
 // Sim `vr handat X Y`: what the camera sees through cursor (X, Y) -> point the hand at it.

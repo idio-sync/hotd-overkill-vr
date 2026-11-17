@@ -55,6 +55,16 @@
 //   vr gun                  log player 1's weapon, ammo and the controller aim
 //   vr god 0|1              dev: keep player 1's health full (player+0x20C)
 //   vr actions 0|1          dev: log the game's input action values (fire 3, reload 5, weapon 0xB/0xC)
+//   vr gunmodel [0|1]       log the gun model state (and switch drawing it off/on)
+//   vr gunset W FIELD V...  per-weapon tuning live: W = magnum, gold_magnum, handcannon, pump,
+//                           autoshotgun, smg, rifle, minigun, crossbow; FIELD = show 0|1, clip 0|1|2,
+//                           grip X Y Z, barrel DX DY DZ, muzzle X Y Z, clipdir DX DY DZ (model cm),
+//                           hold YAW PITCH (degrees)
+//   vr gunview NAME         sim: look at the gun in the hand: aim, back, right, left, front, top, bottom
+//   vr barrelline 0|1       dev: a red line along the barrel to the aim point
+//   vr clipout F            dev: hold the magazine F (0..1) of the way out; no F: from the reload state
+//   findstr TEXT            dev: heap addresses holding TEXT (slow: ~1 min)
+//   drawstack HASH [N]      dev: call stacks and bound streams of the next N draws with vertex shader HASH
 //   vr                      log the current VR settings
 #include "common.h"
 
@@ -350,6 +360,43 @@ FrameRequests control_tick() {
                 gun_set_god(v != 0);
             } else if (what == "gun") {
                 gun_log_state();
+            } else if (what == "gunmodel") {
+                if (!a.empty()) gunmodel_enable(v != 0);
+                gunmodel_log();
+            } else if (what == "gunset") {
+                std::string field;
+                float vals[4];
+                int n = 0;
+                ss >> field;
+                while (n < 4 && ss >> vals[n]) ++n;
+                gunmodel_set(a, field, vals, n);
+                gunmodel_log();
+            } else if (what == "barrelline") {
+                gunmodel_barrel_line(v != 0);
+            } else if (what == "clipout") {
+                gunmodel_force_clip(a.empty() ? -1.f : v);
+            } else if (what == "gunview") {
+                // Sim views of the gun in the hand: head and hand presets (hand relative to the head).
+                struct View { const char* name; float head_yaw, head_pitch, hx, hy, hz, hand_yaw, hand_pitch; };
+                static const View views[] = {
+                    {"aim", 0, 0, 0.15f, -0.25f, -0.35f, 0, 0},     // the default sim hand, aiming ahead
+                    {"back", 0, 0, 0.0f, -0.08f, -0.30f, 0, 0},     // just below the eyes, from behind
+                    {"right", 0, 0, 0.0f, -0.03f, -0.50f, 90, 0},   // barrel to the right: its right side
+                    {"left", 0, 0, 0.0f, -0.03f, -0.50f, -90, 0},   // barrel to the left: its left side
+                    {"front", 0, 0, 0.0f, -0.03f, -0.55f, 180, 0},  // barrel at the eyes: the muzzle
+                    {"top", 0, -89.5f, 0.0f, 0.0f, -0.45f, 0, 89.5f},    // looking down on it, barrel ahead
+                    {"bottom", 0, 89.5f, 0.0f, 0.0f, -0.45f, 0, -89.5f},  // looking up at it
+                };
+                bool found = false;
+                for (const View& w : views)
+                    if (a == w.name) {
+                        g_vr.sim_yaw_deg = w.head_yaw, g_vr.sim_pitch_deg = w.head_pitch;
+                        g_vr.sim_hand[0] = w.hx, g_vr.sim_hand[1] = w.hy, g_vr.sim_hand[2] = w.hz;
+                        g_vr.sim_hand_yaw = w.hand_yaw, g_vr.sim_hand_pitch = w.hand_pitch;
+                        input_sim_pointer(true);
+                        found = true;
+                    }
+                if (!found) logf("vr gunview: aim, back, right, left, front, top or bottom");
             } else if (what == "state") {
                 GameState st = game_state();
                 logf("vr state: level %d cutscene %d paused %d gameplay %d; this frame %s", int(st.level), int(st.cutscene),
@@ -441,6 +488,30 @@ FrameRequests control_tick() {
                     }
             }
             logf("findvt %08lx: %d hits", target, hits);
+        } else if (cmd == "findstr") {
+            // findstr TEXT: heap addresses holding TEXT followed by a NUL (case-sensitive)
+            std::string text;
+            ss >> text;
+            int hits = 0;
+            MEMORY_BASIC_INFORMATION mbi;
+            for (uintptr_t p = 0x10000; !text.empty() && p < 0x7FFF0000 && hits < 32; p += mbi.RegionSize) {
+                if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof mbi)) break;
+                if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE || !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) ||
+                    (mbi.Protect & PAGE_GUARD))
+                    continue;
+                auto d = static_cast<const char*>(mbi.BaseAddress);
+                for (size_t i = 0; i + text.size() + 1 <= mbi.RegionSize && hits < 32; ++i)
+                    if (d[i] == text[0] && !memcmp(d + i, text.c_str(), text.size() + 1)) {
+                        logf("findstr %s: at %p", text.c_str(), d + i);
+                        ++hits;
+                    }
+            }
+            logf("findstr %s: %d hits", text.c_str(), hits);
+        } else if (cmd == "drawstack") {
+            std::string h;
+            int n = 1;
+            ss >> h >> n;
+            request_drawstack(strtoull(h.c_str(), nullptr, 16), n);
         } else if (cmd == "log") {
             logf("log: %s", line.size() > 4 ? line.c_str() + 4 : "");
         } else {

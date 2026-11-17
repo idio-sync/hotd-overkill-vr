@@ -1,9 +1,11 @@
 // Unit tests for src/vr/stereo (no game, no D3D). Run: ctest --test-dir out
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 
 #include "../src/vr/stereo.h"
 #include "../src/vr/aim.h"
+#include "../src/vr/gunpose.h"
 #include "../src/vr/xform.h"
 
 using namespace hv::vr;
@@ -444,7 +446,127 @@ static void test_cursor_on_line() {
     CHECK(!cursor_on_line(base, du, dv, o, du, &x, &y, p, &t));
 }
 
+// --- milestone 3: the gun mesh in the hand ---
+
+static float dist_to_line(const float p[3], const Ray& r) {
+    float v[3] = {p[0] - r.o[0], p[1] - r.o[1], p[2] - r.o[2]};
+    const float t = v[0] * r.d[0] + v[1] * r.d[1] + v[2] * r.d[2];
+    for (int i = 0; i < 3; ++i) v[i] -= t * r.d[i];
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+// The magnum's description (barrel along +x) and one toed-in like the assault rifle's mesh.
+static const GunModelDesc kMagnum = {{1, 0, 0}, {0, 1, 0}, {23.4f, 8.4f, -0.87f}, {0, 1, -0.87f}, {-0.25f, -0.97f, 0}};
+static const GunModelDesc kToedIn = {{0.95f, -0.07f, -0.22f}, {0, 1, 0}, {52.9f, 2.7f, -11.05f}, {-3, -1, 0.8f}, {0, -1, 0}};
+
+static void test_model_to_gun() {
+    for (const GunModelDesc& d : {kMagnum, kToedIn}) {
+        const Mat4 m = model_to_gun(d, 0.01f);
+        // The muzzle goes to the origin, points along the barrel to +z (scaled to metres).
+        Vec4 o = apply(m, {d.muzzle[0], d.muzzle[1], d.muzzle[2], 1});
+        CHECK_NEAR(o.x, 0, 1e-6);
+        CHECK_NEAR(o.y, 0, 1e-6);
+        CHECK_NEAR(o.z, 0, 1e-6);
+        const float n = std::sqrt(d.barrel[0] * d.barrel[0] + d.barrel[1] * d.barrel[1] + d.barrel[2] * d.barrel[2]);
+        Vec4 b = apply(m, {d.muzzle[0] - 30 * d.barrel[0] / n, d.muzzle[1] - 30 * d.barrel[1] / n, d.muzzle[2] - 30 * d.barrel[2] / n, 1});
+        CHECK_NEAR(b.x, 0, 1e-5);
+        CHECK_NEAR(b.y, 0, 1e-5);
+        CHECK_NEAR(b.z, -0.30, 1e-5);
+        // Up stays up (positive y, no sideways part), and the rotation is proper (no mirroring).
+        Vec4 u = apply(m, {d.up[0], d.up[1], d.up[2], 0});
+        CHECK(u.y > 0);
+        CHECK_NEAR(u.x, 0, 1e-6);
+        const float det = m.m[0][0] * (m.m[1][1] * m.m[2][2] - m.m[1][2] * m.m[2][1]) - m.m[0][1] * (m.m[1][0] * m.m[2][2] - m.m[1][2] * m.m[2][0]) +
+                          m.m[0][2] * (m.m[1][0] * m.m[2][1] - m.m[1][1] * m.m[2][0]);
+        CHECK_NEAR(det, 1e-6, 1e-9);  // (0.01)^3
+    }
+    // Magnum: model -z (the mesh's left side, seen from behind the barrel) is the gun's right.
+    const Mat4 m = model_to_gun(kMagnum, 0.01f);
+    Vec4 side = apply(m, {0, 0, -1, 0});
+    CHECK_NEAR(side.x, 0.01, 1e-7);
+}
+
+static void test_gun_in_hand_holds_grip_and_barrel() {
+    const float grip[3] = {0.01f, -0.03f, -0.05f};
+    for (const GunModelDesc& d : {kMagnum, kToedIn}) {
+        const Mat4 g = gun_in_hand(d, 0.01f, grip, 0, 0);
+        const Mat4 hm = mul(g, model_to_gun(d, 0.01f));
+        // The model's grip point lands on the hand's grip point.
+        Vec4 p = apply(hm, {d.grip[0], d.grip[1], d.grip[2], 1});
+        CHECK_NEAR(p.x, grip[0], 1e-6);
+        CHECK_NEAR(p.y, grip[1], 1e-6);
+        CHECK_NEAR(p.z, grip[2], 1e-6);
+        // No hold rotation: the barrel is parallel to the hand's pointing axis (+z).
+        Ray r = barrel_ray(g);
+        CHECK_NEAR(r.d[0], 0, 1e-6);
+        CHECK_NEAR(r.d[1], 0, 1e-6);
+        CHECK_NEAR(r.d[2], 1, 1e-6);
+        // The ray starts at the model's muzzle.
+        Vec4 mz = apply(hm, {d.muzzle[0], d.muzzle[1], d.muzzle[2], 1});
+        CHECK_NEAR(r.o[0], mz.x, 1e-6);
+        CHECK_NEAR(r.o[1], mz.y, 1e-6);
+        CHECK_NEAR(r.o[2], mz.z, 1e-6);
+    }
+    // A hold rotation turns the barrel (pitch 10 up, yaw 5 right) about the grip point.
+    const Mat4 g = gun_in_hand(kMagnum, 0.01f, grip, 5, 10);
+    Ray r = barrel_ray(g);
+    CHECK_NEAR(r.d[1], std::sin(10 * kPi / 180), 1e-5);
+    CHECK(r.d[0] > 0);
+    Vec4 p = apply(mul(g, model_to_gun(kMagnum, 0.01f)), {kMagnum.grip[0], kMagnum.grip[1], kMagnum.grip[2], 1});
+    CHECK_NEAR(p.y, grip[1], 1e-6);
+}
+
+// The drawn barrel, taken to the world with the mesh's world matrix, is the shot ray the gun code
+// uses (camera_ray_to_world of the barrel ray in camera space): the barrel points exactly along it.
+static void test_drawn_barrel_is_the_shot_ray() {
+    const Mat4 view = mul(rotation_yaw_pitch(0.4f, -0.1f), translation(-2766, -76, -6676));  // some camera
+    const Mat4 hand = mul(translation(0.15f, -0.25f, 0.35f), rotation_yaw_pitch(-0.3f, 0.2f));
+    const float grip[3] = {0, -0.03f, -0.05f};
+    for (const GunModelDesc& d : {kMagnum, kToedIn})
+        for (float hold : {0.f, 12.f}) {
+            const Mat4 g = gun_in_hand(d, 0.01f, grip, hold * 0.5f, hold);
+            Mat4 w;
+            CHECK(gun_world_matrix(view, 0.01f, hand, g, model_to_gun(d, 0.01f), &w));
+            Ray shot;
+            CHECK(camera_ray_to_world(view, barrel_ray(mul(hand, g)), 0.01f, &shot));
+            // Model points along the barrel (muzzle and 25 units behind it) lie on the shot ray.
+            const float n = std::sqrt(d.barrel[0] * d.barrel[0] + d.barrel[1] * d.barrel[1] + d.barrel[2] * d.barrel[2]);
+            for (float t : {0.f, -25.f}) {
+                Vec4 q = apply(w, {d.muzzle[0] + t * d.barrel[0] / n, d.muzzle[1] + t * d.barrel[1] / n, d.muzzle[2] + t * d.barrel[2] / n, 1});
+                const float p[3] = {q.x, q.y, q.z};
+                CHECK(dist_to_line(p, shot) < 1e-2f);  // game units
+            }
+            // ... and the muzzle is the ray's origin; world scale is 1 unit = 1 model unit (cm).
+            Vec4 m0 = apply(w, {d.muzzle[0], d.muzzle[1], d.muzzle[2], 1});
+            CHECK_NEAR(m0.x, shot.o[0], 2e-2);
+            CHECK_NEAR(m0.y, shot.o[1], 2e-2);
+            CHECK_NEAR(m0.z, shot.o[2], 2e-2);
+            Vec4 m1 = apply(w, {d.muzzle[0] - d.barrel[0] / n * 10, d.muzzle[1] - d.barrel[1] / n * 10, d.muzzle[2] - d.barrel[2] / n * 10, 1});
+            CHECK_NEAR(std::sqrt((m1.x - m0.x) * (m1.x - m0.x) + (m1.y - m0.y) * (m1.y - m0.y) + (m1.z - m0.z) * (m1.z - m0.z)), 10, 1e-2);
+        }
+    // With no hold rotation the shot direction is the hand's own pointing direction (milestone 2).
+    const Mat4 g = gun_in_hand(kToedIn, 0.01f, grip, 0, 0);
+    Ray a, b;
+    CHECK(camera_ray_to_world(view, barrel_ray(mul(hand, g)), 0.01f, &a));
+    CHECK(camera_ray_to_world(view, pose_ray_lh(hand), 0.01f, &b));
+    for (int i = 0; i < 3; ++i) CHECK_NEAR(a.d[i], b.d[i], 1e-5);
+}
+
+static void test_clip_out_fraction() {
+    CHECK_NEAR(clip_out_fraction(false, 0.5f), 0, 0);
+    CHECK_NEAR(clip_out_fraction(true, 0), 0, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 0.1f), 0.5, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 0.4f), 1, 0);
+    CHECK(clip_out_fraction(true, 0.7f) > 0 && clip_out_fraction(true, 0.7f) < 1);
+    CHECK_NEAR(clip_out_fraction(true, 0.85f), 0, 1e-6);
+    CHECK_NEAR(clip_out_fraction(true, 1.0f), 0, 1e-6);
+}
+
 int main() {
+    test_model_to_gun();
+    test_gun_in_hand_holds_grip_and_barrel();
+    test_drawn_barrel_is_the_shot_ray();
+    test_clip_out_fraction();
     test_flip_z_conversions();
     test_yaw_only_anchor();
     test_tangents_from_openvr();

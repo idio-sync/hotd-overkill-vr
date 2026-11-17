@@ -612,6 +612,31 @@ HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx, const void* u
 
 bool stereo_frame_active() { return g_frame_stereo; }
 
+// --- extra geometry in the scene (the gun model) ---
+// The scene target is drawn in two sessions per frame: the opaque pass (~300 draws per eye), then,
+// after a one-draw detour to a 1280x180 target, transparent effects. The gun goes in when the game
+// leaves the scene target after its opaque pass: depth-tested against the scene, before the
+// effects and the post-processing.
+static bool g_extra_drawn;
+
+static bool scene_eye_setup(IDirect3DDevice9* dev, int eye, vr::Mat4* world_to_clip) {
+    if (!update_eyes()) return false;
+    D3DVIEWPORT9 vp = eye_viewport(g_rt_info, g_game_vp, eye);
+    raw_set_viewport(dev, &vp);
+    *world_to_clip = vr::mul(g_eyes.c[eye], vr::mul(g_eyes.p_game, g_eyes.view));
+    return true;
+}
+
+void stereo_before_rt(IDirect3DDevice9* dev, IDirect3DSurface9* next) {
+    if (!g_frame_stereo || !g_rt_scene || next == g_rt || g_extra_drawn || g_stereo_draws < 30 || g_hud_active) return;
+    g_extra_drawn = true;
+    const D3DVIEWPORT9 game_vp = g_game_vp;
+    gunmodel_draw(dev, scene_eye_setup);
+    D3DVIEWPORT9 full = eye_viewport(g_rt_info, game_vp, -1);
+    raw_set_viewport(dev, &full);
+    frame_note("    stereo: gun model drawn into the scene target");
+}
+
 // --- Present ---
 
 // Flat frames: the game's picture in the back buffer -> the flat-screen texture (mono size).
@@ -738,6 +763,7 @@ void stereo_reset() {
     if (g_bb_resolve) g_bb_resolve->Release();
     g_hud_depth = g_bb_resolve = nullptr;
     mirror_release();
+    gunmodel_reset();
     handoff_release_d3d9();
 }
 
@@ -799,6 +825,7 @@ void stereo_frame_end() {
         }
     }
     g_frame_stereo = next;
+    g_extra_drawn = false;
     g_hud_drawn = false;
     g_bb_drawn = false;
     g_bb_comp = false;
