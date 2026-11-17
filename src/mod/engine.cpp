@@ -1,8 +1,8 @@
 // Engine patches for VR (sim/openvr only; mode=off leaves the game alone):
 //
 // - Frame limiter: the main loop (0x6FDEA0) caps at 60 Hz unless `[[0x9F09E0]+0x48]` (the
-//   `disable-fps-limit` option, a dword) is 0. Cleared once the app object exists, and again if the
-//   game sets it back. Game time uses a variable timestep, so it stays real-time (findings-probe.md).
+//   `disable-fps-limit` option, a dword) is 0. Cleared while the scene is drawn in stereo (see
+//   set_limiter). Game time uses a variable timestep, so it stays real-time (findings-probe.md).
 //
 // - Culling: the camera frustum planes are built by 0x6DEDE0 and 0x6DF810 (both thiscall, 3 args,
 //   ret 0xC) from the half-FOV sin/cos globals that 0x66A8E0 computes (sin/cos of half the X FOV
@@ -74,25 +74,38 @@ static void install_culling_hooks() {
 
 // --- frame limiter ---
 
-static void uncap() {
-    uintptr_t slot = va(kAppPtr);
-    uintptr_t app = *reinterpret_cast<uintptr_t*>(slot);
+// Uncapped only while the scene is being drawn in stereo (gameplay and in-engine cutscenes); the
+// game's own cap comes back elsewhere (boot, menus, loading, video cutscenes - where it was never
+// tested uncapped, and where two early sim runs lost the D3D device).
+static void set_limiter(bool want_uncapped) {
+    static DWORD game_value = 1;
+    static bool cleared;
+    uintptr_t app = *reinterpret_cast<uintptr_t*>(va(kAppPtr));
     if (!app || !readable(app + kFpsLimitOff)) return;
     auto flag = reinterpret_cast<volatile DWORD*>(app + kFpsLimitOff);
-    if (*flag != 0) {
-        logf("frame limiter: app %p +0x48 was %lu, cleared", reinterpret_cast<void*>(app), DWORD(*flag));
+    if (want_uncapped && *flag != 0) {
+        game_value = *flag;
         *flag = 0;
+        if (!cleared) logf("frame limiter: off (app %p +0x48 was %lu)", reinterpret_cast<void*>(app), DWORD(game_value));
+        cleared = true;
+    } else if (!want_uncapped && cleared) {
+        *flag = game_value;
+        cleared = false;
+        logf("frame limiter: restored (%lu)", DWORD(game_value));
     }
 }
 
-void engine_frame() {
+void engine_frame(bool stereo_last_frame) {
     if (g_vr.mode == VrMode::off) return;
     static bool installed;
     if (!installed) {  // at the first Present: after SecuROM's start-up patching
         installed = true;
         install_culling_hooks();
     }
-    if (g_vr.uncap) uncap();
+    // A short debounce so a frame without scene draws (a load hitch) doesn't toggle it.
+    static int mono_frames = 1 << 20;  // untouched until the first stereo frame
+    mono_frames = stereo_last_frame ? 0 : (std::min)(mono_frames + 1, 1 << 20);
+    set_limiter(g_vr.uncap && g_vr.stereo && mono_frames < 30);
 }
 
 }  // namespace hv

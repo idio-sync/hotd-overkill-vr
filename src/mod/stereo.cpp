@@ -365,6 +365,7 @@ HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx) {
 }
 
 void stereo_request_check() { g_check_requested = true; }
+int stereo_draws_this_frame() { return g_stereo_draws; }
 
 void stereo_frame_end() {
     if (g_checking) {

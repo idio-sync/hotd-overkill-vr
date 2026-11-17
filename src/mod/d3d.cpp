@@ -251,7 +251,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
         logf("frame log written (frame %d)", g_frame_no);
     }
     if (ini_int(L"gun_hook", 1)) install_gun_hook();  // once; after SecuROM's start-up patching
-    engine_frame();
+    engine_frame(stereo_draws_this_frame() > 0);
     FrameRequests req = control_tick();
     if (req.shot) save_backbuffer(dev, req.shot_name);  // the back buffer still holds this frame
     if (req.scene_shot) {

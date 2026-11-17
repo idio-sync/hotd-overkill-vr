@@ -135,6 +135,7 @@ void stereo_set_texture(DWORD stage, IDirect3DBaseTexture9* t);
 using DrawFn = HRESULT (*)(void* ctx);
 HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx);  // draws once or once per eye
 void stereo_frame_end();       // Present: per-frame stats and caches
+int stereo_draws_this_frame();  // perspective scene draws drawn per eye so far this frame
 void stereo_request_check();   // `vr check` for the next frame
 const char* stereo_status();   // for the status line
 // Raw device calls past our hooks (d3d.cpp).
@@ -146,7 +147,7 @@ IDirect3DVertexShader9* current_vs();
 void frame_note(const char* text);  // a line in the frame log, if one is being written
 
 // Engine patches (engine.cpp): frame limiter, culling widening.
-void engine_frame();  // once per Present
+void engine_frame(bool stereo_last_frame);  // once per Present
 
 bool save_png(const std::wstring& path, UINT width, UINT height, UINT pitch, const uint8_t* bgra);
 
