@@ -21,7 +21,12 @@ extern std::wstring g_game_dir;
 extern std::wstring g_dir;
 void init_paths();
 std::wstring path_in(const wchar_t* name);  // g_dir + L"\\" + name
-int ini_int(const wchar_t* key, int def);   // hovr\probe.ini [probe] key
+// Development vs release (src/vr/harness.h): development = hovr\probe.ini exists or hovr.ini
+// [vr] dev=1 (the test copy); decided once in init_paths.
+bool dev_harness();
+// A harness setting: hovr\probe.ini [probe] KEY in development (default dev_default), the fixed
+// release value otherwise.
+int harness_int(const wchar_t* key, int dev_default, int release_value);
 
 void log_open();
 void logf(const char* fmt, ...);
@@ -86,6 +91,12 @@ struct VrConfig {
     float clip_drop = 0.2f;      // how far it drops, metres
     float gun_light = 1.0f;      // brightness of the gun's lighting
     float gun_face_sign = 1.0f;  // which side of the mesh's triangles faces out (lighting); -1 flips
+    // Comfort (milestone 4, comfort.cpp).
+    bool game_arms = false;      // the game's own first-person arms/reload animation (0: hidden in VR)
+    bool camera_shake = false;   // the game's camera shake and hit smack
+    bool head_bob = false;       // the game's head-bob while the rail moves
+    bool recentre_resume = true; // recentre whenever gameplay resumes after a flat screen (pause, death, cutscene)
+    bool keep_active = false;    // release: the game keeps running when its window loses focus
 };
 extern VrConfig g_vr;
 void load_vr_config();
@@ -99,6 +110,14 @@ void install_d3d_hooks();     // Direct3DCreate9 -> device vtable hooks
 void start_audio_mute();
 void install_dinput_hooks();  // DirectInput8: scripted mouse buttons/motion and keys
 void install_file_hooks();    // logs .pc asset opens
+
+// Comfort (comfort.cpp): first-person arms, camera shake/smack, head-bob, WiiView edge-pan.
+void comfort_frame();          // once per Present (installs its detours at the first one; VR modes only)
+void comfort_log();            // `vr comfort`
+void comfort_camlog(int frames);   // dev: log the camera position for the next N frames
+void comfort_log_shake(bool on);   // dev: log every non-zero shake/smack offset
+void comfort_log_actors(bool on);
+void comfort_allow_wiiview(bool on);  // dev: let the game's edge-pan answer through (to compare)  // dev: log each actor drawn through the entity draw (once per actor)
 
 // The controller gun (gun.cpp): detours on the game's shot paths and cursor setters, installed
 // from the first Present (after SecuROM's start-up patching).
@@ -115,6 +134,8 @@ void gun_log_state();      // `vr gun`: weapon, ammo, aim
 bool gun_aim_active();     // the controller drives player 1's aim now
 void gun_log_actions(bool on);  // dev: log the game's input action values as they change
 void gun_set_god(bool on);  // dev: keep player 1's health full (tests that need time in gameplay)
+void gun_request_measure();
+int gun_hits();             // player 1's health drops seen so far (dev `vr waithit`)  // dev `vr measure`: world-scale ray casts (next game frame)
 
 // The weapon model (gunmodel.cpp).
 void gunmodel_load_config();  // per-weapon [vr] keys: show_, clip_, grip_, barrel_, muzzle_, hold_<weapon>
@@ -313,7 +334,7 @@ void handoff_save(ID3D11Texture2D* tex, const std::string& name);
 // The headset (vrsys.cpp): OpenVR or simulated.
 void vrsys_start();         // at Direct3DCreate9: OpenVR init (mode=openvr), eye resolution
 bool vrsys_openvr();
-void vrsys_recentre();
+void vrsys_recentre(const char* why);  // logged; openvr: the anchor moves to the head at the next pose
 void vrsys_wait_poses();    // after Present: the next frame's head pose
 vr::Mat4 vrsys_eye_in_anchor(int eye);  // right-handed, metres
 bool vrsys_eye(int eye, vr::Mat4* pose_lh, float tan[4]);  // false: sim (no headset tangents)

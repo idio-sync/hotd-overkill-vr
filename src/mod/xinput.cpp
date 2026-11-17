@@ -29,7 +29,7 @@ static std::mutex g_pad_mx;
 static XINPUT_GAMEPAD g_pad{};
 
 bool fake_pad_enabled() {
-    static int on = ini_int(L"fake_pad", 1);
+    static int on = harness_int(L"fake_pad", 1, 0);  // release: the real pad only
     return on != 0;
 }
 

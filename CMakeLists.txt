@@ -36,6 +36,7 @@ add_library(hovr SHARED
     src/mod/gamestate.cpp
     src/mod/mirror.cpp
     src/mod/vrsys.cpp
+    src/mod/comfort.cpp
     src/vr/stereo.cpp
     src/vr/xform.cpp
     src/vr/aim.cpp

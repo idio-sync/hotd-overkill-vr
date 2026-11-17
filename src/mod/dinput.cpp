@@ -30,7 +30,7 @@ static std::deque<DIDEVICEOBJECTDATA> g_key_events, g_mouse_events;
 static DWORD g_seq;
 
 static bool ignore_real() {
-    static int on = ini_int(L"minimized", 1);
+    static int on = harness_int(L"minimized", 1, 0);
     return on != 0;
 }
 

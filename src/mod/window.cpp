@@ -15,15 +15,19 @@ static LONG g_client_w = 1280, g_client_h = 720;
 static std::atomic<int> g_cursor_x{-1}, g_cursor_y{-1};
 static std::atomic<uint8_t> g_async[256];
 
+// Development: minimized (probe.ini minimized=1, the default), with faked activation. Release:
+// the game's own window; [vr] keep_active=1 only fakes the activation (the game keeps running
+// when another window takes the focus).
 static bool minimized_mode() {
-    static int on = ini_int(L"minimized", 1);
+    static int on = harness_int(L"minimized", 1, 0);
     return on != 0;
 }
+static bool fake_active() { return minimized_mode() || g_vr.keep_active; }
 
 HWND game_window() { return g_hwnd.load(); }
 
 static LRESULT CALLBACK hk_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (minimized_mode()) {
+    if (fake_active()) {
         switch (msg) {
             case WM_ACTIVATEAPP:
                 if (!wp) wp = TRUE;
@@ -37,7 +41,7 @@ static LRESULT CALLBACK hk_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case WM_KILLFOCUS:
                 return 0;
             case WM_SIZE:
-                if (wp == SIZE_MINIMIZED) return 0;
+                if (wp == SIZE_MINIMIZED && minimized_mode()) return 0;
                 break;
         }
     }
@@ -54,7 +58,7 @@ static HWND WINAPI hk_CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR name, DWORD s
     if (hwnd && !parent && !(style & WS_CHILD) && !g_hwnd.load()) {
         g_hwnd = hwnd;
         g_orig_proc = reinterpret_cast<WNDPROC>(SetWindowLongA(hwnd, GWL_WNDPROC, reinterpret_cast<LONG>(hk_wndproc)));
-        if (minimized_mode()) {
+        if (fake_active()) {
             PostMessageA(hwnd, WM_ACTIVATEAPP, TRUE, 0);
             PostMessageA(hwnd, WM_ACTIVATE, WA_ACTIVE, 0);
             PostMessageA(hwnd, WM_SETFOCUS, 0, 0);

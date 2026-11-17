@@ -45,6 +45,17 @@
 //                                    middle click reload, wheel/TAB swap weapon, right click grenade).
 //   sim_hand  = 0.15,-0.25,-0.35     sim hand position relative to the head, metres (x right, y up, z back)
 //   sim_hand_yaw = 0, sim_hand_pitch = 0   sim hand direction relative to the head, degrees
+//
+//   Comfort (comfort.cpp, stereo.cpp):
+//   game_arms = 0                    1: the game's own first-person arms and weapon during reloads
+//                                    (some weapon/character pairs, e.g. the SMG with Varla); 0 hides them
+//   camera_shake = 0                 1: the game's camera shake and hit jolts (up to ~30 degrees of turn)
+//   head_bob = 0                     1: the game's head-bob while the rail moves
+//   recentre_resume = 1              recentre whenever gameplay comes back from a flat screen (pause,
+//                                    death screen/continue, cutscene, next chapter), as at a level start
+//   keep_active = 0                  1: the game keeps running when its window loses the focus
+//   dev = 0                          1: the development harness (as when hovr\probe.ini exists): save
+//                                    redirected into hovr\, command file, probe.ini window/sound keys
 #include "common.h"
 
 #include <cwchar>
@@ -182,6 +193,11 @@ void load_vr_config() {
     c.clip_drop = ini_float(L"clip_drop", c.clip_drop);
     c.gun_light = ini_float(L"gun_light", c.gun_light);
     c.gun_face_sign = ini_float(L"gun_face_sign", c.gun_face_sign) < 0 ? -1.f : 1.f;
+    c.game_arms = ini_float(L"game_arms", 0) != 0;
+    c.camera_shake = ini_float(L"camera_shake", 0) != 0;
+    c.head_bob = ini_float(L"head_bob", 0) != 0;
+    c.recentre_resume = ini_float(L"recentre_resume", 1) != 0;
+    c.keep_active = ini_float(L"keep_active", 0) != 0;
     c.stereo = c.mode != VrMode::off;
     g_vr = c;
     gunmodel_load_config();
@@ -196,6 +212,8 @@ void load_vr_config() {
     logf("vr: aim=%d hand=%s hand_pitch=%.1f hand_offset=%.3f,%.3f,%.3f haptics=%.2f marker=%d reload_gesture=%d (%.0f deg)", int(c.aim),
          c.left_hand ? "left" : "right", c.hand_pitch, c.hand_offset[0], c.hand_offset[1], c.hand_offset[2], c.haptics, int(c.marker),
          int(c.reload_gesture), c.reload_gesture_deg);
+    logf("vr: game_arms=%d camera_shake=%d head_bob=%d recentre_resume=%d keep_active=%d", int(c.game_arms), int(c.camera_shake), int(c.head_bob),
+         int(c.recentre_resume), int(c.keep_active));
     logf("vr: buttons reload=%s switch=%s grenade=%s pause=%s recentre=%s; game fire=%s reload=%s switch=%s grenade=%s pause=%s",
          c.btn_reload.c_str(), c.btn_switch.c_str(), c.btn_grenade.c_str(), c.btn_pause.c_str(), c.btn_recentre.c_str(), c.game_fire.c_str(),
          c.game_reload.c_str(), c.game_switch.c_str(), c.game_grenade.c_str(), c.game_pause.c_str());

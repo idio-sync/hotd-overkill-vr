@@ -61,7 +61,7 @@ static DWORD WINAPI mute_thread(void*) {
 }
 
 void start_audio_mute() {
-    if (!ini_int(L"mute", 1)) return;
+    if (!harness_int(L"mute", 1, 0)) return;  // release: sound on
     CloseHandle(CreateThread(nullptr, 0, mute_thread, nullptr, 0, nullptr));
 }
 

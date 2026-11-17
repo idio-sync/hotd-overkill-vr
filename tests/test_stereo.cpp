@@ -7,6 +7,7 @@
 #include "../src/vr/aim.h"
 #include "../src/vr/gunpose.h"
 #include "../src/vr/xform.h"
+#include "../src/vr/harness.h"
 
 using namespace hv::vr;
 
@@ -571,7 +572,28 @@ static void test_clip_out_fraction() {
     CHECK_NEAR(clip_out_fraction(false, 0, 0.2f, 0.8f), 0, 1e-6);
 }
 
+// Release vs development: the test copy (probe.ini) keeps the whole harness and its save redirect
+// in every mode; a release install never redirects, never hides or mutes the window, never polls a
+// command file, and with mode=off (or Shift held at start) hooks nothing at all.
+static void test_harness_plan() {
+    for (bool vr_mode : {false, true})
+        for (bool shift : {false, true}) {
+            HarnessPlan dev = plan_harness({true, false, vr_mode, shift});
+            CHECK(dev.dev && dev.hooks && dev.redirect_save && dev.command_file && dev.dev_logging && dev.probe_ini_keys);
+            CHECK(dev.minimized && dev.mute && dev.fake_pad);
+            CHECK(dev.vr == (vr_mode && !shift));
+            HarnessPlan key = plan_harness({false, true, vr_mode, shift});
+            CHECK(key.dev && key.redirect_save && key.command_file);
+            HarnessPlan rel = plan_harness({false, false, vr_mode, shift});
+            CHECK(!rel.dev && !rel.redirect_save && !rel.command_file && !rel.dev_logging && !rel.probe_ini_keys);
+            CHECK(!rel.minimized && !rel.mute && !rel.fake_pad);
+            CHECK(rel.vr == (vr_mode && !shift));
+            CHECK(rel.hooks == (vr_mode && !shift));  // mode=off or Shift: a plain XInput pass-through
+        }
+}
+
 int main() {
+    test_harness_plan();
     test_model_to_gun();
     test_gun_in_hand_holds_grip_and_barrel();
     test_drawn_barrel_is_the_shot_ray();

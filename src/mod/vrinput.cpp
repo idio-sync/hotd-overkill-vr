@@ -216,8 +216,7 @@ void input_frame() {
         const ULONGLONG now = GetTickCount64();
         if (!held_since) held_since = now;
         if (held_since != ~0ull && now - held_since >= 1000) {
-            logf("input: recentre (button held)");
-            vrsys_recentre();
+            vrsys_recentre("button held");
             held_since = ~0ull;  // once per hold
         }
     } else {

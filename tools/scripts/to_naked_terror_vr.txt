@@ -1,0 +1,31 @@
+# Boot -> main menu -> House of the Dead: Overkill -> Story -> Naked Terror -> Start (player 1 is
+# Varla there; the arms rig hud_armsv is loaded) with the sim gun hand, at a 1920x1200 back buffer
+# (console session). Cutscenes skipped with the pause button. Needs mode=sim.
+wait 30000
+vr handscreen 1524 1010
+wait 300
+vr btn trigger
+wait 4000
+vr handscreen 310 1018
+wait 300
+vr btn trigger
+wait 4000
+vr handscreen 958 1016
+wait 300
+vr btn trigger
+wait 4000
+vr handscreen 1170 888
+wait 300
+vr btn trigger
+wait 1500
+vr handscreen 1624 1100
+wait 300
+vr btn trigger
+wait 25000
+vr btn off.b
+wait 10000
+vr btn off.b
+wait 8000
+vr god 1
+vr hand 0 0
+log at gameplay

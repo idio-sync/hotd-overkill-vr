@@ -14,6 +14,7 @@ std::wstring g_dir;
 static FILE* g_log;
 static std::mutex g_log_mx;
 static ULONGLONG g_start;
+static bool g_dev;
 
 void init_paths() {
     wchar_t buf[MAX_PATH];
@@ -23,15 +24,22 @@ void init_paths() {
     g_dir = g_game_dir + L"\\hovr";
     CreateDirectoryW(g_dir.c_str(), nullptr);
     g_start = GetTickCount64();
+    // Development harness: the test copy has hovr\probe.ini (src/vr/harness.h).
+    g_dev = GetFileAttributesW(path_in(L"probe.ini").c_str()) != INVALID_FILE_ATTRIBUTES ||
+            GetPrivateProfileIntW(L"vr", L"dev", 0, path_in(L"hovr.ini").c_str()) != 0;
 }
 
 std::wstring path_in(const wchar_t* name) { return g_dir + L"\\" + name; }
 
-int ini_int(const wchar_t* key, int def) {
-    return int(GetPrivateProfileIntW(L"probe", key, def, path_in(L"probe.ini").c_str()));
+bool dev_harness() { return g_dev; }
+
+int harness_int(const wchar_t* key, int dev_default, int release_value) {
+    if (!g_dev) return release_value;
+    return int(GetPrivateProfileIntW(L"probe", key, dev_default, path_in(L"probe.ini").c_str()));
 }
 
-void log_open() { g_log = _wfopen(path_in(L"probe.log").c_str(), L"w"); }
+// Development keeps the probe's log name (the harness reads it); a release install logs to hovr.log.
+void log_open() { g_log = _wfopen(path_in(g_dev ? L"probe.log" : L"hovr.log").c_str(), L"w"); }
 
 void logf(const char* fmt, ...) {
     if (!g_log) return;

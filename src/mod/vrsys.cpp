@@ -116,7 +116,8 @@ void vrsys_start() {
     ::vr::VRCompositor()->SetTrackingSpace(::vr::TrackingUniverseStanding);
 }
 
-void vrsys_recentre() {
+void vrsys_recentre(const char* why) {
+    logf("vr: recentre (%s)%s", why, g_openvr ? "" : " - sim: the scripted head is the anchor");
     g_recentre = true;
 }
 

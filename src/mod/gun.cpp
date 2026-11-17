@@ -203,6 +203,8 @@ static float g_handat[2];
 static std::atomic<int> g_hooks_installed;
 static std::atomic<bool> g_god;  // dev `vr god 1`: player 1's health (player+0x20C, 10 = full) kept full
 void gun_set_god(bool on) { g_god = on; }
+static std::atomic<int> g_hits;  // player 1's health drops seen
+int gun_hits() { return g_hits.load(); }
 
 bool gun_aim_active() {
     if (g_vr.mode == VrMode::off || !g_vr.aim || !g_hooks_installed) return false;
@@ -289,6 +291,64 @@ static void do_handseek(uintptr_t player) {
 
 void gun_request_handseek() { g_seek_pending = true; }
 
+// Dev `vr measure` (world-scale check): from the camera (the engine's camera position 0x9C7E88),
+// the game's ray cast straight down (floor), up (ceiling) and level in 8 directions (walls); then a
+// fine grid of the camera's view finds the shootable entity nearest the centre and reports the
+// vertical extent of its hit points (a standing zombie: about its height) and its distance.
+static std::atomic<bool> g_measure_pending;
+void gun_request_measure() { g_measure_pending = true; }
+
+static void do_measure(uintptr_t player) {
+    float cam[3];
+    if (!safe_copy(cam, va(0x9C7E88), 12)) return;
+    const float u = g_vr.unit_m;
+    auto dist = [&](float dx, float dy, float dz) {
+        const float d[3] = {dx, dy, dz};
+        float hit[3];
+        if (!cast_ray(cam, d, 5000, hit)) return -1.f;
+        return std::sqrt((hit[0] - cam[0]) * (hit[0] - cam[0]) + (hit[1] - cam[1]) * (hit[1] - cam[1]) + (hit[2] - cam[2]) * (hit[2] - cam[2]));
+    };
+    const float down = dist(0, -1, 0), up = dist(0, 1, 0);
+    float walls[8];
+    for (int i = 0; i < 8; ++i) walls[i] = dist(std::cos(i * 0.7853982f), 0, std::sin(i * 0.7853982f));
+    logf("vr measure: camera at %.1f %.1f %.1f; floor %.1f units below (%.2f m), ceiling %.1f above (%.2f m) -> room height %.2f m", cam[0], cam[1],
+         cam[2], down, down * u, up, up * u, down > 0 && up > 0 ? (down + up) * u : -1.f);
+    logf("vr measure: level distances to walls (8 directions, m): %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f", walls[0] * u, walls[1] * u, walls[2] * u,
+         walls[3] * u, walls[4] * u, walls[5] * u, walls[6] * u, walls[7] * u);
+    // Zombies: every shootable entity in a fine grid of the view; extent of its hit points.
+    float base[3], du[3], dv[3], o[4];
+    if (!unproject_basis(base, du, dv) || !safe_copy(o, player + 0x1E0, 16)) return;
+    struct Ent {
+        uintptr_t e;
+        float ymin, ymax, dsum, cx, cy;
+        int n;
+    };
+    std::vector<Ent> ents;
+    for (float y = -360; y <= 360; y += 6)
+        for (float x = -640; x <= 640; x += 12) {
+            float d[3];
+            for (int i = 0; i < 3; ++i) d[i] = base[i] + x * du[i] + y * dv[i] - o[i];
+            const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            for (float& c : d) c /= n;
+            float hit[3];
+            HitInfo info;
+            if (!cast_ray(o, d, 5000, hit, &info) || !info.shootable) continue;
+            const float dd = std::sqrt((hit[0] - o[0]) * (hit[0] - o[0]) + (hit[1] - o[1]) * (hit[1] - o[1]) + (hit[2] - o[2]) * (hit[2] - o[2]));
+            Ent* f = nullptr;
+            for (Ent& e : ents)
+                if (e.e == info.entity) f = &e;
+            if (!f) ents.push_back({info.entity, hit[1], hit[1], 0, 0, 0, 0}), f = &ents.back();
+            f->ymin = (std::min)(f->ymin, hit[1]), f->ymax = (std::max)(f->ymax, hit[1]);
+            f->dsum += dd, f->cx += x, f->cy += y, ++f->n;
+        }
+    for (const Ent& e : ents)
+        logf("vr measure: shootable %p: %d cells around cursor %.0f %.0f, %.2f m away; hit points span y %.1f..%.1f = %.2f m (top %.2f m above "
+             "the floor under the camera)",
+             reinterpret_cast<void*>(e.e), e.n, e.cx / e.n, e.cy / e.n, e.dsum / e.n * u, e.ymin, e.ymax, (e.ymax - e.ymin) * u,
+             down > 0 ? (e.ymax - (cam[1] - down)) * u : -1.f);
+    if (ents.empty()) logf("vr measure: nothing shootable in view");
+}
+
 // Once per game frame (lazily, from the cursor setters): the hand's ray, where it meets the scene,
 // and the cursor that projects there.
 static void aim_update(uintptr_t player) {
@@ -299,6 +359,7 @@ static void aim_update(uintptr_t player) {
     }
     if (g_handat_pending.exchange(false)) do_handat(player);
     if (g_seek_pending.exchange(false)) do_handseek(player);
+    if (g_measure_pending.exchange(false)) do_measure(player);
     Aim a;
     a.frame = frame;
     if (gun_aim_active() && hand_world_ray(&a.ray)) {
@@ -329,9 +390,17 @@ bool gun_aim_point(float out[3], bool* hit) {
 
 static bool cursor_override(uint8_t* player, int axis, float* v) {
     if (reinterpret_cast<uintptr_t>(player) != player1()) return false;
-    if (g_god) {
+    {
+        // Hits on player 1 (dev: `vr waithit` waits for one; god mode refills the health after it).
         auto health = reinterpret_cast<volatile int32_t*>(player + 0x20C);
-        if (*health > 0 && *health < 10) *health = 10;
+        static int32_t last = -1;
+        const int32_t h = *health;
+        if (last >= 0 && h < last) {
+            ++g_hits;
+            logf("player 1 hit: health %d -> %d", int(last), int(h));
+        }
+        if (g_god && h > 0 && h < 10) *health = 10;
+        last = *health;
     }
     aim_update(reinterpret_cast<uintptr_t>(player));
     std::lock_guard lock(g_aim_mx);

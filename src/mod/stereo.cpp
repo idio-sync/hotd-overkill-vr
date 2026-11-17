@@ -75,7 +75,7 @@ static bool g_scissor_on;
 static bool g_frame_stereo;      // this frame is drawn in stereo
 static int g_frames_since_scene = 1 << 20;
 static bool g_level_was;
-static bool g_recentre_pending;
+static const char* g_recentre_pending;  // why the next entry into gameplay recentres (null: it doesn't)
 static GameState g_state;
 
 // HUD redirection and the hand-off textures.
@@ -810,7 +810,7 @@ void stereo_frame_end() {
     if (g_vr.mode != VrMode::off && (prev.level != g_state.level || prev.cutscene != g_state.cutscene || prev.paused != g_state.paused))
         logf("game state: level %d cutscene %d paused %d", int(g_state.level), int(g_state.cutscene), int(g_state.paused));
     g_frames_since_scene = g_scene_persp ? 0 : (std::min)(g_frames_since_scene + 1, 1 << 20);
-    if (g_state.level && !g_level_was) g_recentre_pending = true;  // a level started
+    if (g_state.level && !g_level_was) g_recentre_pending = "level start";
     g_level_was = g_state.level;
     // Entering gameplay waits 0.5 s of steady gameplay state: at a level's start the cutscene flag
     // is raised a few frames after the level appears (seen: 0.3 s of stereo before the intro).
@@ -824,9 +824,13 @@ void stereo_frame_end() {
         logf("stereo: %s (level %d cutscene %d paused %d, scene %s)", next ? "gameplay - stereo eyes + HUD panel" : "flat screen",
              int(g_state.level), int(g_state.cutscene), int(g_state.paused), g_frames_since_scene < 30 ? "drawn" : "not drawn");
         if (next && g_recentre_pending) {
-            vrsys_recentre();
-            g_recentre_pending = false;
+            vrsys_recentre(g_recentre_pending);
+            g_recentre_pending = nullptr;
         }
+        // Leaving gameplay (pause, death screen, a cutscene, a loading screen): the flat screen is
+        // world-locked where the view was; recentre when gameplay comes back (continue, restart, the
+        // next chapter), so the rail camera's direction is ahead of wherever the player now faces.
+        if (!next && g_vr.recentre_resume && !g_recentre_pending) g_recentre_pending = "gameplay resumed after a flat screen";
     }
     g_frame_stereo = next;
     g_extra_drawn = false;

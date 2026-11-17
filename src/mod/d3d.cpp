@@ -210,11 +210,11 @@ static void log_pp(const char* what, const D3DPRESENT_PARAMETERS* pp) {
 }
 
 static void fix_pp(D3DPRESENT_PARAMETERS* pp) {
-    if (ini_int(L"windowed", 1)) {
+    if (harness_int(L"windowed", 1, 1)) {  // VR modes need a windowed device (D3D9Ex hand-off)
         pp->Windowed = TRUE;
         pp->FullScreen_RefreshRateInHz = 0;
     }
-    if (!ini_int(L"vsync", 1)) pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    if (!harness_int(L"vsync", 1, 1)) pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 }
 
 // PNG of a render target surface (resolved first if multisampled).
@@ -285,7 +285,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
         g_frame = nullptr;
         logf("frame log written (frame %d)", g_frame_no);
     }
-    if (ini_int(L"gun_hook", 1)) install_gun_hooks();  // once; after SecuROM's start-up patching
+    if (harness_int(L"gun_hook", 1, 1)) install_gun_hooks();  // once; after SecuROM's start-up patching
     gun_frame();
     gunmodel_frame();
     FrameRequests req = control_tick();
@@ -307,6 +307,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
     }
     stereo_frame_end();  // decides the next frame's mode
     engine_frame(stereo_frame_active());
+    comfort_frame();
 
     HRESULT hr = o_Present(dev, a, b, w, r);
     if (hr == S_PRESENT_OCCLUDED || hr == S_PRESENT_MODE_CHANGED) hr = D3D_OK;  // 9Ex success codes the game doesn't know
@@ -335,7 +336,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
         snprintf(status, sizeof status, "frame %d: %.1f fps, dt %.2f-%.2f ms, %d draws last frame%s", g_frame_no,
                  frames_since / since, min_dt * 1000.0 / g_qpf, max_dt * 1000.0 / g_qpf, g_draws, stereo_status());
         logf("%s", status);
-        write_status(status);
+        if (dev_harness()) write_status(status);
         static int reports;
         if (++reports % 12 == 1) log_pools();
         last_report = now.QuadPart;
@@ -835,7 +836,7 @@ void install_d3d_hooks() {
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     g_qpf = f.QuadPart;
-    g_cap_fps = ini_int(L"cap_fps", 0);
+    g_cap_fps = harness_int(L"cap_fps", 0, 0);
     patch_import(GetModuleHandleW(nullptr), "d3d9.dll", "Direct3DCreate9", reinterpret_cast<void*>(hk_Direct3DCreate9),
                  reinterpret_cast<void**>(&o_Direct3DCreate9));
 }

@@ -54,6 +54,15 @@
 //   vr gesture 0|1          reload gesture on/off
 //   vr gun                  log player 1's weapon, ammo and the controller aim
 //   vr god 0|1              dev: keep player 1's health full (player+0x20C)
+//   vr arms|shake|bob 0|1   switch game_arms / camera_shake / head_bob live (and log)
+//   vr comfort              log the comfort state (arms draws hidden, largest shake offsets, head-bob, edge-pan)
+//   vr camlog [N]           dev: log the camera position and forward axis for the next N frames (120)
+//   vr shakelog 0|1         dev: log every non-zero camera shake/smack offset
+//   vr actors 0|1           dev: log each actor drawn through the entity draw 0x7697A0 (once per actor)
+//   vr wiiview 0|1          dev: 1 lets the game's WiiView edge-pan through (to compare; VR keeps it off)
+//   vr waithit [MS]         dev: the queue waits until player 1 is hit (or MS, default 30000, pass)
+//   vr measure              dev: world-scale check - ray casts from the camera (floor, ceiling, walls) and
+//                           the height of the zombie nearest the view's centre
 //   vr actions 0|1          dev: log the game's input action values (fire 3, reload 5, weapon 0xB/0xC)
 //   vr gunmodel [0|1]       log the gun model state (and switch drawing it off/on)
 //   vr gunset W FIELD V...  per-weapon tuning live: W = magnum, gold_magnum, handcannon, pump,
@@ -76,6 +85,7 @@ namespace hv {
 
 static std::deque<std::string> g_queue;
 static ULONGLONG g_wait_until;
+static int g_wait_hits = -1;  // `vr waithit`: the queue waits until player 1's hit count passes this
 static WORD g_buttons;
 static int g_shot_no;
 
@@ -174,13 +184,19 @@ static void read_cmd_file() {
 
 FrameRequests control_tick() {
     FrameRequests req;
+    if (!dev_harness()) return req;  // release: no command file
     static ULONGLONG last_check;
     ULONGLONG now = GetTickCount64();
     if (now - last_check >= 100) {
         last_check = now;
         read_cmd_file();
     }
-    while (!g_queue.empty() && now >= g_wait_until) {
+    if (g_wait_hits >= 0 && (gun_hits() > g_wait_hits || now >= g_wait_until)) {
+        logf("vr waithit: %s", gun_hits() > g_wait_hits ? "player 1 was hit" : "timed out");
+        g_wait_hits = -1;
+        g_wait_until = now;
+    }
+    while (!g_queue.empty() && now >= g_wait_until && g_wait_hits < 0) {
         std::string line = g_queue.front();
         g_queue.pop_front();
         std::stringstream ss(line);
@@ -315,7 +331,7 @@ FrameRequests control_tick() {
                 req.handoff_shot = true;
                 req.handoff_name = a.empty() ? "handoff_" + std::to_string(++g_shot_no) : a;
             } else if (what == "recentre" || what == "recenter") {
-                vrsys_recentre();
+                vrsys_recentre("command");
             } else if (what == "dbg") {
 
                 g_dbg = atoi(a.c_str());
@@ -358,6 +374,25 @@ FrameRequests control_tick() {
                 gun_log_actions(v != 0);
             } else if (what == "god") {
                 gun_set_god(v != 0);
+            } else if (what == "arms" || what == "shake" || what == "bob" || what == "comfort") {
+                if (!a.empty() && what != "comfort") {
+                    bool& flag = what == "arms" ? g_vr.game_arms : what == "shake" ? g_vr.camera_shake : g_vr.head_bob;
+                    flag = v != 0;
+                }
+                comfort_log();
+            } else if (what == "camlog") {
+                comfort_camlog(a.empty() ? 120 : atoi(a.c_str()));
+            } else if (what == "shakelog") {
+                comfort_log_shake(v != 0);
+            } else if (what == "actors") {
+                comfort_log_actors(v != 0);
+            } else if (what == "measure") {
+                gun_request_measure();
+            } else if (what == "wiiview") {
+                comfort_allow_wiiview(v != 0);
+            } else if (what == "waithit") {
+                g_wait_hits = gun_hits();
+                g_wait_until = now + (a.empty() ? 30000 : ULONGLONG(atoi(a.c_str())));
             } else if (what == "gun") {
                 gun_log_state();
             } else if (what == "gunmodel") {
