@@ -241,3 +241,12 @@ findings-static.md. Everything below was observed in the running game unless mar
   marker in both eyes for both; magazines drop and return on reload; switching weapons switches
   the model; quitting a level releases the models (`gun model: level ended, 2 weapon model(s)
   released`); mode=off draws nothing. Other weapons were measured from their meshes only.
+- **The game does draw a first-person reload animation** (correction to "never drawn, in reload
+  or otherwise"): in Naked Terror (player 1 = Varla, packs hud_armsv + hud_armsc loaded) an SMG
+  rises at the lower right of the game camera during each SMG reload and is gone afterwards. It is
+  drawn by the engine, not the mod: it stays with `vr gunmodel 0`; a reload frame adds two
+  skinned draws (vs e4dfaaee7f77629f, cBoneMatrix; 76-byte vertices, ~2484 verts, two materials)
+  through the actor draw path 0x7697A0 (caller 0x523FDD), not our 52-byte GunArms_SMG buffer.
+  Most likely the arms rig's reload animation (GunArms_Varla_Mesh with its `_Reload` clips; not
+  verified which pack). Not seen for the magnum in Papa's Palace. In VR it is a second gun at the
+  head during reloads: a candidate to hide in milestone 4 / the hands version.
