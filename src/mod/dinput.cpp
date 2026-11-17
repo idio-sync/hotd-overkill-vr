@@ -76,7 +76,8 @@ void di_mouse_wheel(LONG dz) {
 }
 
 // The real mouse is ignored in the minimized test window, and in VR modes once the controllers
-// drive the pointer (vrinput.cpp); the real keyboard only in the minimized test window.
+// drive the pointer (vrinput.cpp); the real keyboard in the minimized test window (and in VR
+// modes all of it but Escape, see hk_GetDeviceState). Buffered keyboard reads keep the real keys.
 static bool ignore_real_dev(Kind k) { return ignore_real() || (k == Kind::mouse && input_owns_pointer()); }
 
 // IDirectInputDevice8A
@@ -128,6 +129,13 @@ static HRESULT STDMETHODCALLTYPE hk_GetDeviceState(IDirectInputDevice8A* dev, DW
     if (ignore_real_dev(i->kind) || FAILED(hr)) {
         memset(data, 0, size);
         hr = DI_OK;
+    } else if (i->kind == Kind::keyboard && input_owns_pointer() && size > DIK_ESCAPE) {
+        // VR with controllers: the real keyboard can't fire, reload or switch either; only its
+        // Escape (pause, skip cutscenes) still reaches the game.
+        auto k = static_cast<uint8_t*>(data);
+        const uint8_t esc = k[DIK_ESCAPE];
+        memset(data, 0, size);
+        k[DIK_ESCAPE] = esc;
     }
     if (i->kind == Kind::keyboard) {
         auto k = static_cast<uint8_t*>(data);
