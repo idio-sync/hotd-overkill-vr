@@ -1,0 +1,30 @@
+# Boot -> main menu -> House of the Dead: Overkill -> Story -> Papa's Palace of Pain -> Start
+# -> skip the intro cutscene -> first kitchen fight. Queued at the first Present.
+wait 30000
+cursor 1150 690
+wait 500
+click
+wait 4000
+cursor 330 686
+wait 300
+click
+wait 3000
+cursor 256 560
+wait 300
+click
+wait 1500
+cursor 770 684
+wait 300
+click
+wait 4000
+cursor 1212 742
+wait 300
+click
+wait 25000
+key ESCAPE
+wait 15000
+# the intro has a second cutscene
+key ESCAPE
+wait 16000
+cursor 768 400
+log at gameplay
