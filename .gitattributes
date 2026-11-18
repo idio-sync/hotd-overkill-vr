@@ -1,0 +1,3 @@
+# cmd.exe needs CRLF (labels and goto misbehave with LF-only batch files).
+*.cmd text eol=crlf
+*.bat text eol=crlf

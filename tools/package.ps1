@@ -1,6 +1,8 @@
 # Builds the release zip: out\dist\hotd-overkill-vr-<version>.zip with the mod's DLLs, the
-# installer, the default settings, the README and the licence notes. No game files: the mod reads
-# the game's own assets at runtime and ships none of them.
+# installer, the default settings, the README, the licence and the third-party notes. No game
+# files: the mod reads the game's own assets at runtime and ships none of them. Next to it:
+# hotd-overkill-vr-<version>-pdb.zip (XINPUT1_3.pdb, for crash dumps; not for players) and
+# hotd-overkill-vr-<version>.sha256 (SHA-256 of both zips, sha256sum format).
 #
 #   powershell -File tools\package.ps1 [-NoBuild] [-Version 0.4.0]
 param(
@@ -12,8 +14,13 @@ $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root 'out'
 
 if (-not $NoBuild) {
-    & cmd /c (Join-Path $root 'build.cmd')
-    if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+    # Judge the build by its exit code: under Windows PowerShell 5.1 with 'Stop', any line a tool
+    # writes to stderr (vcvars' own notes, compiler chatter) would otherwise abort the script.
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & cmd /c (Join-Path $root 'build.cmd') 2>&1 | ForEach-Object { "$_" } }
+    finally { $ErrorActionPreference = $eap }
+    if ($LASTEXITCODE -ne 0) { throw "build failed (build.cmd exit code $LASTEXITCODE)" }
 }
 if (-not $Version) {
     $hash = (& git -C $root rev-parse --short HEAD).Trim()
@@ -33,6 +40,7 @@ $files = [ordered]@{
     'install_game.ps1' = Join-Path $PSScriptRoot 'install_game.ps1'
     'hovr.default.ini' = Join-Path $PSScriptRoot 'hovr.default.ini'
     'README.md'        = Join-Path $root 'README.md'
+    'LICENSE'          = Join-Path $root 'LICENSE'
 }
 # Ship Valve's openvr_api.dll, never the test runtime (out\fakevr, ProductName 'hovr fakevr').
 $real = Join-Path $root 'third_party\openvr\bin\win32\openvr_api.dll'
@@ -57,6 +65,7 @@ Contents
 - install_game.ps1  installs into / uninstalls from the game folder (see README.md, "Install")
 - hovr.default.ini  the default settings the installer copies to <game>\hovr\hovr.ini
 - README.md         settings, controls, the headset checklist and known issues
+- LICENSE           the mod's licence (MIT)
 
 Third-party licence: OpenVR SDK (openvr_api.dll)
 -------------------------------------------------
@@ -68,3 +77,16 @@ if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 Write-Output "packaged $zip"
 Get-ChildItem -LiteralPath $stage | ForEach-Object { '  {0,-18} {1,10:N0} bytes' -f $_.Name, $_.Length }
+
+# Debug symbols for the mod's DLL (crash dumps from players), kept out of the players' zip.
+$pdb = Join-Path $out 'XINPUT1_3.pdb'
+$pdbZip = Join-Path $out "dist\$name-pdb.zip"
+if (Test-Path -LiteralPath $pdbZip) { Remove-Item -LiteralPath $pdbZip }
+if (-not (Test-Path -LiteralPath $pdb)) { throw "missing $pdb (build RelWithDebInfo)" }
+Compress-Archive -LiteralPath $pdb -DestinationPath $pdbZip
+Write-Output "packaged $pdbZip"
+
+$sums = Join-Path $out "dist\$name.sha256"
+$lines = @($zip, $pdbZip | ForEach-Object { "$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLower())  $(Split-Path $_ -Leaf)" })
+[IO.File]::WriteAllText($sums, ($lines -join "`n") + "`n", [Text.Encoding]::ASCII)
+Write-Output "wrote $sums"
