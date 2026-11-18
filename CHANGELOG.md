@@ -6,7 +6,7 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-11-17
 
 The first release: milestones 1-4 of the design. **Not yet played in a real headset**: everything
 below was checked without one, in the mod's no-headset mode (`sim`) and against a fake SteamVR
