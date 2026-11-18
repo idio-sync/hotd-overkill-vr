@@ -42,6 +42,9 @@
 //   axes 0|1, tip 0|1                describe the axes / give the render model a tip component
 //   ipd M, cant DEG, hz HZ, fov OUTER INNER UP DOWN (degrees)
 //   capture NAME [truth 0|1] [scale S]  captures of the next complete frame (compositor.cpp)
+//   event quit | dashboard 0|1 | focus | roles | ipd M | connect L|R | disconnect L|R
+//                                    queue a SteamVR event for PollNextEvent (connect/disconnect and
+//                                    ipd also change the state)
 //   state                            log the whole state; haptics: log the pulses since the last
 //   wait MS, log TEXT
 #include "fakevr.h"
@@ -256,6 +259,16 @@ void advance_poses(double t) {
     for (auto& c : s.ctl) step_anim(c.anim, c.aim, t);
 }
 
+// Events (`event ...`), handed out by PollNextEvent in order.
+static std::deque<vr::VREvent_t> g_events;
+static void push_event(uint32_t type, uint32_t device) {
+    vr::VREvent_t e{};
+    e.eventType = type;
+    e.trackedDeviceIndex = device;
+    e.data.process.pid = GetCurrentProcessId();
+    g_events.push_back(e);
+}
+
 static bool device_ok(uint32_t d) { return d == kHmd || ((d == kLeft || d == kRight) && st().ctl[d].connected); }
 
 void fill_pose(uint32_t d, vr::TrackedDevicePose_t* out) {
@@ -463,10 +476,20 @@ public:
         log_prop(d, p, "string", v.c_str());
         return need;
     }
-    bool PollNextEvent(vr::VREvent_t*, uint32_t) override {
+    bool PollNextEvent(vr::VREvent_t* out, uint32_t size) override {
+        std::lock_guard lock(st().mx);
         static int n;
-        if (n++ == 0) logf("PollNextEvent: first call (no events are generated)");
-        return false;
+        if (n++ == 0) logf("PollNextEvent: first call");
+        if (size != sizeof(vr::VREvent_t)) {
+            static int warned;
+            if (warned++ < 3) logf("PollNextEvent: size %u, expected %u", size, unsigned(sizeof(vr::VREvent_t)));
+            return false;
+        }
+        if (g_events.empty() || !out) return false;
+        *out = g_events.front();
+        g_events.pop_front();
+        logf("PollNextEvent -> event %u (device %u)", out->eventType, out->trackedDeviceIndex);
+        return true;
     }
     bool GetControllerState(vr::TrackedDeviceIndex_t d, vr::VRControllerState_t* out, uint32_t size) override {
         std::lock_guard lock(st().mx);
@@ -499,7 +522,7 @@ public:
     bool IsSteamVRDrawingControllers() override { return true; }
     bool ShouldApplicationPause() override { return false; }
     bool ShouldApplicationReduceRenderingWork() override { return false; }
-    void AcknowledgeQuit_Exiting() override { logf("AcknowledgeQuit_Exiting"); }
+    void AcknowledgeQuit_Exiting() override { logf("AcknowledgeQuit_Exiting (the app says it is exiting)"); }
     const char* GetRuntimeVersion() override { return "fakevr 1"; }
     vr::EVRInitError SetSDKVersion(uint32_t a, uint32_t b, uint32_t c) override {
         logf("SetSDKVersion %u.%u.%u", a, b, c);
@@ -757,6 +780,23 @@ void run_command(const std::string& line) {
             if (k == "truth") ss >> s.capture_truth;
             if (k == "scale") ss >> s.capture_scale;
         }
+    } else if (cmd == "event") {
+        // quit | dashboard 0|1 | focus | roles | ipd M | connect L|R (activated) | disconnect L|R
+        std::string what, arg;
+        ss >> what >> arg;
+        if (what == "quit") push_event(vr::VREvent_Quit, vr::k_unTrackedDeviceIndexInvalid);
+        else if (what == "dashboard") push_event(arg == "0" ? vr::VREvent_DashboardDeactivated : vr::VREvent_DashboardActivated, vr::k_unTrackedDeviceIndexInvalid);
+        else if (what == "focus") push_event(vr::VREvent_InputFocusChanged, vr::k_unTrackedDeviceIndexInvalid);
+        else if (what == "roles") push_event(vr::VREvent_TrackedDeviceRoleChanged, vr::k_unTrackedDeviceIndexInvalid);
+        else if (what == "connect" || what == "disconnect") {
+            const uint32_t d = hand_of(arg);
+            s.ctl[d].connected = what == "connect";
+            push_event(what == "connect" ? vr::VREvent_TrackedDeviceActivated : vr::VREvent_TrackedDeviceDeactivated, d);
+        } else if (what == "ipd") {
+            s.ipd = atof(arg.c_str());
+            push_event(vr::VREvent_IpdChanged, vr::k_unTrackedDeviceIndex_Hmd);
+            g_events.back().data.ipd.ipdMeters = float(s.ipd);
+        } else logf("unknown event %s", what.c_str());
     } else if (cmd == "state") {
         log_state();
     } else if (cmd == "haptics") {
@@ -825,6 +865,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         }
         logf("fakevr: recommended %ux%u per eye, %.0f Hz", st().rec_w, st().rec_h, st().hz);
     }
+    if (reason == DLL_PROCESS_DETACH)
+        logf("fakevr: unloading (process exit); the app %s", g_initialised ? "never called VR_Shutdown" : "shut OpenVR down or never started it");
     return TRUE;
 }
 

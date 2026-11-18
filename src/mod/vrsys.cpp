@@ -213,6 +213,38 @@ void vrsys_haptic(unsigned us) {
     if (d != ::vr::k_unTrackedDeviceIndexInvalid) g_sys->TriggerHapticPulse(d, 0, (unsigned short)((std::min)(us, 3999u)));
 }
 
+// SteamVR's events (once per frame, after the poses): logged for headset sessions (dashboard,
+// input focus, controllers coming and going, IPD); VREvent_Quit (SteamVR closing, or the user
+// quitting the game from the dashboard) is acknowledged and the game window asked to close, the
+// way SteamVR expects a scene application to leave instead of being killed after a timeout.
+static void poll_events() {
+    ::vr::VREvent_t e;
+    while (g_sys->PollNextEvent(&e, sizeof e)) {
+        switch (e.eventType) {
+            case ::vr::VREvent_Quit: {
+                const HWND w = game_window();
+                logf("vr: SteamVR asks the game to quit; closing the window %p", static_cast<void*>(w));
+                g_sys->AcknowledgeQuit_Exiting();
+                if (w) PostMessageW(w, WM_CLOSE, 0, 0);
+                break;
+            }
+            case ::vr::VREvent_TrackedDeviceActivated:
+            case ::vr::VREvent_TrackedDeviceDeactivated:
+            case ::vr::VREvent_TrackedDeviceRoleChanged:
+                logf("vr: event %s, device %u", e.eventType == ::vr::VREvent_TrackedDeviceActivated     ? "device activated"
+                                                : e.eventType == ::vr::VREvent_TrackedDeviceDeactivated ? "device deactivated"
+                                                                                                         : "controller roles changed",
+                     e.trackedDeviceIndex);
+                break;
+            case ::vr::VREvent_DashboardActivated: logf("vr: event SteamVR dashboard opened"); break;
+            case ::vr::VREvent_DashboardDeactivated: logf("vr: event SteamVR dashboard closed"); break;
+            case ::vr::VREvent_InputFocusChanged: logf("vr: event input focus changed (process %u)", e.data.process.pid); break;
+            case ::vr::VREvent_IpdChanged: logf("vr: event IPD changed: %.4f m", e.data.ipd.ipdMeters); break;
+            default: break;
+        }
+    }
+}
+
 static vr::Mat4 sim_head() {
     // The scripted head, as a right-handed pose (the conversion is its own inverse).
     return vr::flip_z(vr::rotation_yaw_pitch(g_vr.sim_yaw_deg * kPi / 180, g_vr.sim_pitch_deg * kPi / 180));
@@ -249,6 +281,7 @@ void vrsys_wait_poses() {
         logf("vr: recentred at %.2f %.2f %.2f m, heading %.1f deg", g_anchor.m[0][3], g_anchor.m[1][3], g_anchor.m[2][3],
              std::atan2(-g_anchor.m[0][2], g_anchor.m[2][2]) * 180 / kPi);
     }
+    poll_events();
     poll_controller(true);
     poll_controller(false);
     const ::vr::TrackedDeviceIndex_t gun = g_ctl[0].device;
