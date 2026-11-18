@@ -59,3 +59,22 @@ enable_testing()
 add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp src/vr/gunpose.cpp)
 target_compile_options(hovr_tests PRIVATE /W4 /utf-8)
 add_test(NAME stereo COMMAND hovr_tests)
+
+# fakevr: a fake SteamVR runtime for tests - out\fakevr\openvr_api.dll (src/fakevr/fakevr.cpp).
+# Kept out of out\ itself so packaging can never pick it up; tools\run.ps1 -OpenVR fake installs it.
+enable_language(RC)
+add_library(fakevr SHARED src/fakevr/fakevr.cpp src/fakevr/compositor.cpp src/fakevr/fakevr.rc)
+set_target_properties(fakevr PROPERTIES OUTPUT_NAME openvr_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fakevr ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fakevr
+    PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fakevr)
+target_compile_definitions(fakevr PRIVATE VR_API_EXPORT NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+target_include_directories(fakevr PRIVATE third_party/openvr/headers)
+target_compile_options(fakevr PRIVATE /W4 /wd4100 /utf-8)
+target_link_libraries(fakevr PRIVATE d3d11 ole32 windowscodecs)
+# The fake runtime through the OpenVR header, with the mod's conversions (runs next to the fake DLL).
+add_executable(fakevr_tests tests/test_fakevr.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp)
+set_target_properties(fakevr_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fakevr)
+target_include_directories(fakevr_tests PRIVATE third_party/openvr/headers)
+target_compile_options(fakevr_tests PRIVATE /W4 /utf-8)
+target_link_libraries(fakevr_tests PRIVATE fakevr d3d11)
+add_test(NAME fakevr COMMAND fakevr_tests WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/fakevr)

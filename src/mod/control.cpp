@@ -75,6 +75,8 @@
 //   findstr TEXT            dev: heap addresses holding TEXT (slow: ~1 min)
 //   drawstack HASH [N]      dev: call stacks and bound streams of the next N draws with vertex shader HASH
 //   vr                      log the current VR settings
+//   fakevr CMD...           a command for the fake SteamVR runtime (src/fakevr; tests only), e.g.
+//                           `fakevr head 0 1.6 0 30 0 0`, `fakevr capture NAME`
 #include "common.h"
 
 #include <cstdio>
@@ -549,6 +551,13 @@ FrameRequests control_tick() {
             request_drawstack(strtoull(h.c_str(), nullptr, 16), n);
         } else if (cmd == "log") {
             logf("log: %s", line.size() > 4 ? line.c_str() + 4 : "");
+        } else if (cmd == "fakevr") {
+            // The test runtime (src/fakevr): its scripting, in order with these commands.
+            using FakeCmd = void(__cdecl*)(const char*);
+            HMODULE m = GetModuleHandleW(L"openvr_api.dll");
+            FakeCmd f = m ? reinterpret_cast<FakeCmd>(GetProcAddress(m, "fakevr_command")) : nullptr;
+            if (f) f(line.size() > 7 ? line.c_str() + 7 : "");
+            else logf("fakevr: openvr_api.dll is not loaded or is not the fake runtime");
         } else {
             logf("unknown command: %s", line.c_str());
         }

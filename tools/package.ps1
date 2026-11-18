@@ -34,6 +34,12 @@ $files = [ordered]@{
     'hovr.default.ini' = Join-Path $PSScriptRoot 'hovr.default.ini'
     'README.md'        = Join-Path $root 'README.md'
 }
+# Ship Valve's openvr_api.dll, never the test runtime (out\fakevr, ProductName 'hovr fakevr').
+$real = Join-Path $root 'third_party\openvr\bin\win32\openvr_api.dll'
+if ((Get-FileHash -LiteralPath $files['openvr_api.dll']).Hash -ne (Get-FileHash -LiteralPath $real).Hash -or
+    (Get-Item -LiteralPath $files['openvr_api.dll']).VersionInfo.ProductName -eq 'hovr fakevr') {
+    throw "$($files['openvr_api.dll']) is not Valve's openvr_api.dll ($real)"
+}
 foreach ($k in $files.Keys) {
     if (-not (Test-Path -LiteralPath $files[$k])) { throw "missing $($files[$k])" }
     Copy-Item -LiteralPath $files[$k] (Join-Path $stage $k)

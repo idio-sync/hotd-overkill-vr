@@ -35,6 +35,9 @@ if (Get-Process HOTD_NG -ErrorAction SilentlyContinue) { throw 'close the game f
 
 $hovr = Join-Path $Game 'hovr'
 $record = Join-Path $hovr 'installed.txt'
+if (-not $Uninstall -and (Get-Item -LiteralPath (Join-Path $From 'openvr_api.dll')).VersionInfo.ProductName -eq 'hovr fakevr') {
+    throw "$From\openvr_api.dll is the test runtime (fakevr), not Valve's"
+}
 
 function Get-Sha256([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
 

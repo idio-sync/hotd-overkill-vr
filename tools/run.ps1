@@ -4,7 +4,12 @@ param(
     [string]$Game = 'C:\Users\Virtual\hotd-vr-game',
     [switch]$Stop,
     [switch]$Normal,  # start with a normal window instead of minimized
-    [ValidateSet('', 'off', 'sim', 'openvr')] [string]$Mode = ''  # hovr.ini [vr] mode for this run (kept)
+    [ValidateSet('', 'off', 'sim', 'openvr')] [string]$Mode = '',  # hovr.ini [vr] mode for this run (kept)
+    # Which openvr_api.dll the test copy gets (kept until changed): 'fake' = the fake SteamVR runtime
+    # (out\fakevr, src/fakevr: tests without a headset; never starts SteamVR), 'real' = Valve's
+    # (out\openvr_api.dll, for a headset session). Omitted: the one there stays. mode=openvr only
+    # starts with the fake one installed, or with -OpenVR real given in the same call.
+    [ValidateSet('', 'fake', 'real')] [string]$OpenVR = ''
 )
 $ErrorActionPreference = 'Stop'
 $hovr = Join-Path $Game 'hovr'
@@ -31,9 +36,18 @@ if ($running) { throw "HOTD_NG is already running (PID $($running.Id -join ', ')
 
 New-Item -ItemType Directory -Force $hovr | Out-Null
 Copy-Item (Join-Path $PSScriptRoot '..\out\XINPUT1_3.dll') (Join-Path $Game 'XINPUT1_3.dll') -Force
-# openvr_api.dll (delay-loaded; only used with mode=openvr)
-$ovr = Join-Path $PSScriptRoot '..\out\openvr_api.dll'
-if (Test-Path $ovr) { Copy-Item $ovr (Join-Path $Game 'openvr_api.dll') -Force }
+# openvr_api.dll (delay-loaded; only used with mode=openvr): the fake runtime or Valve's, on request.
+$gameOvr = Join-Path $Game 'openvr_api.dll'
+function Test-FakeVR([string]$path) {
+    (Test-Path $path) -and ((Get-Item $path).VersionInfo.ProductName -eq 'hovr fakevr')
+}
+if ($OpenVR) {
+    $src = if ($OpenVR -eq 'fake') { Join-Path $PSScriptRoot '..\out\fakevr\openvr_api.dll' } else { Join-Path $PSScriptRoot '..\out\openvr_api.dll' }
+    if (-not (Test-Path $src)) { throw "missing $src (build.cmd)" }
+    if (($OpenVR -eq 'fake') -ne (Test-FakeVR $src)) { throw "$src is not the $OpenVR openvr_api.dll" }
+    Copy-Item $src $gameOvr -Force
+    Write-Output "installed the $OpenVR openvr_api.dll"
+}
 
 # The probe redirects %APPDATA% to hovr\AppData; seed it once with a copy of the real save.
 $save = Join-Path $hovr 'AppData\sega\typing of the dead overkill'
@@ -52,6 +66,16 @@ $minimized = (Get-Content $ini) -match '^minimized=1'
 # The mod's own settings: hovr\hovr.ini [vr] (see src/mod/config.cpp). -Mode sets its mode line.
 $vrIni = Join-Path $hovr 'hovr.ini'
 if (-not (Test-Path $vrIni)) { Set-Content $vrIni "[vr]`r`nmode=off`r`n" -Encoding ASCII }
+# mode=openvr with Valve's openvr_api.dll starts SteamVR: only with the fake runtime, or when this
+# very call asked for the real one (-OpenVR real, a headset session).
+$effective = $Mode
+if (-not $effective) {
+    $m = Get-Content $vrIni | Select-String '^\s*mode\s*=\s*(\w+)' | Select-Object -Last 1
+    $effective = if ($m) { $m.Matches[0].Groups[1].Value } else { 'off' }
+}
+if ($effective -eq 'openvr' -and -not (Test-FakeVR $gameOvr) -and $OpenVR -ne 'real') {
+    throw "refusing mode=openvr: $gameOvr is not the fake runtime (it would start SteamVR). Use -OpenVR fake for tests, or -OpenVR real for a headset session."
+}
 if ($Mode) {
     $lines = @(Get-Content $vrIni | Where-Object { $_ -notmatch '^\s*mode\s*=' })
     $i = [array]::IndexOf($lines, '[vr]')
@@ -59,10 +83,10 @@ if ($Mode) {
     $rest = if ($i + 1 -lt $lines.Count) { $lines[($i + 1)..($lines.Count - 1)] } else { @() }
     Set-Content $vrIni (@($lines[0..$i]) + "mode=$Mode" + @($rest)) -Encoding ASCII
 }
-Remove-Item (Join-Path $hovr 'status.txt'), (Join-Path $hovr 'cmd.txt') -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $hovr 'status.txt'), (Join-Path $hovr 'cmd.txt'), (Join-Path $hovr 'fakevr_cmd.txt') -ErrorAction SilentlyContinue
 Get-ChildItem $hovr -File | Where-Object Name -match '^(shot_\d+|frame_\d+)\.(png|txt)$' | Remove-Item
 
 $style = if ($Normal -or -not $minimized) { 'Normal' } else { 'Minimized' }
 $p = Start-Process (Join-Path $Game 'HOTD_NG.exe') -WorkingDirectory $Game -WindowStyle $style -PassThru
 Set-Content $pidFile $p.Id
-Write-Output "started PID $($p.Id)"
+Write-Output "started PID $($p.Id) (mode=$effective$(if ($effective -eq 'openvr') { if (Test-FakeVR $gameOvr) { ', fake SteamVR runtime' } else { ', REAL SteamVR' } }))"
