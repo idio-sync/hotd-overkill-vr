@@ -38,6 +38,7 @@ static vr::Mat4 g_head = vr::identity();    // right-handed, tracking space
 static vr::Mat4 g_eye_to_head[2] = {vr::identity(), vr::identity()};
 static float g_tan[2][4];
 static bool g_recentre = true;
+static bool g_have_pose;  // openvr: WaitGetPoses has given a valid head pose
 static constexpr float kPi = 3.14159265f;
 
 // The gun hand (tip and hand_offset/hand_pitch applied), tracking space; read by the game thread.
@@ -240,10 +241,13 @@ void vrsys_wait_poses() {
     const auto& hmd = poses[::vr::k_unTrackedDeviceIndex_Hmd];
     if (hmd.bPoseIsValid) g_head = vr::from_rows34(hmd.mDeviceToAbsoluteTracking.m);
     read_eyes();  // IPD can change while playing
+    if (hmd.bPoseIsValid) g_have_pose = true;
     if (g_recentre && hmd.bPoseIsValid) {
         g_anchor = vr::yaw_only_rh(g_head);
         g_recentre = false;
-        logf("vr: recentred at %.2f %.2f %.2f m", g_anchor.m[0][3], g_anchor.m[1][3], g_anchor.m[2][3]);
+        // Heading: + = turned right from the tracking space's -z (the anchor's forward is its -z column).
+        logf("vr: recentred at %.2f %.2f %.2f m, heading %.1f deg", g_anchor.m[0][3], g_anchor.m[1][3], g_anchor.m[2][3],
+             std::atan2(-g_anchor.m[0][2], g_anchor.m[2][2]) * 180 / kPi);
     }
     poll_controller(true);
     poll_controller(false);
@@ -280,7 +284,25 @@ bool vrsys_head_in_anchor(vr::Mat4* pose_rh) {
 }
 
 // Sim: turn the scripted hand towards a point given relative to the anchor (right-handed, metres).
+// OpenVR with the fake runtime (tests, src/fakevr): the point in tracking space goes to its `aim`
+// command instead, so `vr handat`, `vr handscreen` and `vr handseek` work there too.
 void vrsys_sim_aim_at(const float p[3]) {
+    if (g_openvr) {
+        using FakeCmd = void(__cdecl*)(const char*);
+        HMODULE m = GetModuleHandleW(L"openvr_api.dll");
+        FakeCmd f = m ? reinterpret_cast<FakeCmd>(GetProcAddress(m, "fakevr_command")) : nullptr;
+        if (!f || !dev_harness()) {
+            logf("vr: aiming the hand by command needs the fake runtime (openvr mode)");
+            return;
+        }
+        float t[3];
+        for (int i = 0; i < 3; ++i) t[i] = g_anchor.m[i][0] * p[0] + g_anchor.m[i][1] * p[1] + g_anchor.m[i][2] * p[2] + g_anchor.m[i][3];
+        char cmd[128];
+        snprintf(cmd, sizeof cmd, "aim %s %.4f %.4f %.4f", g_vr.left_hand ? "L" : "R", t[0], t[1], t[2]);
+        logf("vr: fake runtime %s (anchor-space point %.3f %.3f %.3f)", cmd, p[0], p[1], p[2]);
+        f(cmd);
+        return;
+    }
     const vr::Mat4 head = sim_head();
     const vr::Mat4 at = vr::mul(head, vr::translation(g_vr.sim_hand[0], g_vr.sim_hand[1], g_vr.sim_hand[2]));
     const float dir[3] = {p[0] - at.m[0][3], p[1] - at.m[1][3], p[2] - at.m[2][3]};
@@ -351,7 +373,9 @@ static void update_overlay(Overlay& o, ID3D11Texture2D* tex) {
 // Eyes: the double-wide eye texture (left half, right half), or null for black eyes (flat
 // frames). hud / screen: the panels' textures, or null to hide them.
 void vrsys_submit(ID3D11Texture2D* eyes, ID3D11Texture2D* hud, ID3D11Texture2D* screen) {
-    if (!g_openvr) return;
+    // Nothing before the first pose: the frame was drawn without one, and the panels would be
+    // placed at the tracking origin (the anchor is the first head pose).
+    if (!g_openvr || !g_have_pose) return;
     for (int eye = 0; eye < 2; ++eye) {
         ::vr::Texture_t t{eyes ? eyes : handoff_black(), ::vr::TextureType_DirectX, ::vr::ColorSpace_Gamma};
         const ::vr::VRTextureBounds_t half{eye ? 0.5f : 0.f, 0.f, eye ? 1.f : 0.5f, 1.f};
