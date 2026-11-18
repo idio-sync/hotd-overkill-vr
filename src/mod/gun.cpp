@@ -1,4 +1,4 @@
-// The controller is the gun (design: "Gun and input"). Every shot path of player 1 is fed the
+// The controller is the gun (milestone 2). Every shot path of player 1 is fed the
 // gun hand's ray instead of the camera's ray through the mouse cursor, so the game's own ray casts
 // decide the hits from the hand's position (parallax included):
 //

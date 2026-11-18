@@ -67,7 +67,7 @@ to hovr\hovr.ini. Uninstall: delete XINPUT1_3.dll, openvr_api.dll and the hovr f
 Contents
 - XINPUT1_3.dll     the mod (a stand-in XInput DLL the game loads from its own folder)
 - openvr_api.dll    Valve's OpenVR API (32-bit 2.15.6), used to talk to SteamVR; licence below
-- README.md         install, settings, controls, the headset checklist and known issues
+- README.md         install, playing, controls, the main settings and known issues
 - LICENSE           the mod's licence (MIT)
 - LICENSES.txt      this file
 

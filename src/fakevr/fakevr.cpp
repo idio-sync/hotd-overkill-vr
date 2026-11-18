@@ -2,8 +2,9 @@
 // controller model, scripting.
 //
 // Headset model (shaped like the Steam Frame as SteamVR would report it; values documented in
-// README "Fake SteamVR runtime"): per-eye half-angles 52 deg outer, 45 deg inner, 46 deg up, 50 deg
-// down (asymmetric both ways, like pancake-lens headsets of ~100-110 deg), IPD 64 mm (eye-to-head
+// docs/DEVELOPMENT.md "Fake SteamVR runtime"): per-eye half-angles 52 deg outer, 45 deg inner,
+// 46 deg up, 50 deg down (asymmetric both ways, like pancake-lens headsets of ~100-110 deg),
+// IPD 64 mm (eye-to-head
 // = +-32 mm along x, no cant unless `cant D`), recommended 2064x2016 per eye (2016 tall, the width
 // in proportion to the tangents), 120 Hz; WaitGetPoses paces at that rate. The head starts at
 // (0, 1.65, 0) facing -z (standing universe, the same numbers seated).

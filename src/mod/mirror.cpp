@@ -1,4 +1,4 @@
-// The desktop window in sim/openvr modes (design: "the desktop window shows a mirror"):
+// The desktop window in sim/openvr modes (a mirror of the headset):
 //  - gameplay frames: left eye | right eye side by side at the eye images' aspect, each with the
 //    HUD panel drawn where the headset shows it (projected through that eye; premultiplied alpha);
 //  - flat frames: the flat-screen texture (the game's mono frame as sent to the headset),

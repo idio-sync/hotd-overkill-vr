@@ -1,4 +1,4 @@
-// The game's own weapon model in the gun hand (design: "The weapon model", milestone 3).
+// The game's own weapon model in the gun hand (milestone 3).
 //
 // What the game has (docs/findings-probe.md "The weapon model"): every weapon's hud pack
 // (<level>_hud_<weapon>.pc) holds the first-person mesh GunArms_<Weapon> and its magazine
@@ -6,7 +6,8 @@
 // each, with an actor instance, for every equipped weapon - and never draws them. The weapon data
 // block (cWeapon+4) lists those entities as (hash, 0, entity*) triples from +0x28.
 //
-// How we draw them (option 2 of the design: the engine's own GPU buffers, our own draw):
+// How we draw them (the engine's own GPU buffers, our own draw; rather than having the engine
+// draw its model, or extracting the meshes offline, which could not ship):
 //   cWeapon+4 = data -> entity E (a triple) -> the actor instance I near E (vtable 0x80FB58,
 //   I+0xF0 == E, I+0x8C = the actor resource ACTR) -> ACTR+0x28 node -> node+0xB0 mesh:
 //   mesh+0 vertex count, +4 vertex buffer record {IDirect3DVertexBuffer9*, 0, count, stride},

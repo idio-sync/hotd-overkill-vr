@@ -1,4 +1,4 @@
-// The game's device as Direct3D 9Ex (design: "Rendering - Device"), so that our textures can be
+// The game's device as Direct3D 9Ex, so that our textures can be
 // shared with a D3D11 device for OpenVR. Plain D3D9 refuses shared handles (the game's own device
 // answered D3DERR_INVALIDCALL in the share test, 2026-11-17), so sim/openvr modes create the
 // device with Direct3DCreate9Ex/CreateDeviceEx; mode=off leaves it a plain D3D9 device.

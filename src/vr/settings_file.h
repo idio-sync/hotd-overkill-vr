@@ -1,5 +1,5 @@
 #pragma once
-// The mod's first-run settings file (release installs; design: "Process and files"). Plain file
+// The mod's first-run settings file (release installs). Plain file
 // logic without the game, unit tested (tests/test_stereo.cpp); src/mod/config.cpp applies it.
 //
 // A release install is the two DLLs copied into the game folder: nothing writes hovr\hovr.ini

@@ -1,7 +1,7 @@
 # A pushed tag vX.Y.Z[-suffix]: the same build and tests as build.yml, then a GitHub Release for
 # that tag with the players' zip, the PDB zip and their SHA-256 sums, its notes taken from the
 # matching "## [X.Y.Z] - date" section of CHANGELOG.md (which must exist and be dated). A pre-release
-# when the version has a '-' suffix or is 0.x. Run tools\release_check.ps1 before tagging (README,
+# when the version has a '-' suffix or is 0.x. Run tools\release_check.ps1 before tagging (docs/DEVELOPMENT.md,
 # "Releases"). This workflow never creates, moves or deletes tags.
 name: release
 

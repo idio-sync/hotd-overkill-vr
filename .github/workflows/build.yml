@@ -1,6 +1,7 @@
 # Every push and pull request to main: the 32-bit release build (RelWithDebInfo), the unit tests,
 # and the players' zip as it would be released (plus the mod's PDB) as artifacts. The game is not
-# here, so in-game checks are tools\release_check.ps1's job before a tag (README, "Releases").
+# here, so in-game checks are tools\release_check.ps1's job before a tag (docs/DEVELOPMENT.md,
+# "Releases").
 name: build
 
 on:

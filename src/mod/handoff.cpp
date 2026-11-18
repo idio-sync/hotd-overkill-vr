@@ -1,4 +1,4 @@
-// D3D9 -> D3D11 hand-off (design: "Rendering - Device"; part 2 of milestone 1).
+// D3D9 -> D3D11 hand-off (part 2 of milestone 1).
 //
 // The eye images, the HUD and the flat screen are rendered by the game's D3D9 device into our own
 // D3DPOOL_DEFAULT render-target textures. With a 9Ex device (d3d9ex.cpp) those are created with

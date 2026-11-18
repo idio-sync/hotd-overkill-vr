@@ -1,5 +1,5 @@
 #pragma once
-// Release vs development (design: "Process and files"; milestone 4). Pure decision logic, unit
+// Release vs development (milestone 4). Pure decision logic, unit
 // tested (tests/test_stereo.cpp); src/mod/dllmain.cpp applies it.
 //
 // Development = the folder holds hovr\probe.ini (the test copy does), or hovr.ini [vr] dev=1:

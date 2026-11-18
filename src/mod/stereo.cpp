@@ -1,4 +1,4 @@
-// Same-frame stereo by per-draw duplication (design: "Rendering").
+// Same-frame stereo by per-draw duplication (milestone 1).
 //
 // Screen-sized render targets are created double-wide at eye resolution: the 1280x720 scene
 // target and its depth and the bloom/blur chain (640x180, 320x180, 160x90, 640x360) at width x

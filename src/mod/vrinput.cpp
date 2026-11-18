@@ -1,4 +1,4 @@
-// Controllers -> the game (design: "Gun and input", "Menus"). Once per frame, after the poses
+// Controllers -> the game (gun and menus). Once per frame, after the poses
 // were read (vrsys_wait_poses):
 //
 // - Buttons become the game's own mouse/keyboard input through the DirectInput state the mod

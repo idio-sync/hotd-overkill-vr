@@ -6,6 +6,13 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The README is written for players, with screenshots; the full settings list moved to
+  `docs/SETTINGS.md` and everything for developers (building, the test tools, releases, the
+  headset playtest checklist) to `docs/DEVELOPMENT.md`. The comment at the top of a newly written
+  `hovr\hovr.ini` points to the settings list.
+
 ## [0.1.1] - 2026-11-17
 
 Installs by copying files: extract the zip into the game folder. Otherwise the same mod as 0.1.0;
@@ -34,9 +41,9 @@ still **not yet played in a real headset**.
 
 Withdrawn: superseded by 0.1.1, which installs by copying files.
 
-The first release: milestones 1-4 of the design. **Not yet played in a real headset**: everything
-below was checked without one, in the mod's no-headset mode (`sim`) and against a fake SteamVR
-runtime shaped like the Steam Frame. Please try it, and send `hovr\hovr.log` with any report.
+The first release: milestones 1-4 (docs/DEVELOPMENT.md, "Design notes"). **Not yet played in a
+real headset**: everything below was checked without one, in the mod's no-headset mode (`sim`)
+and against a fake SteamVR runtime shaped like the Steam Frame. Please try it, and send `hovr\hovr.log` with any report.
 
 Needs *The Typing of the Dead: Overkill* on Steam (Steam build 569304 of `HOTD_NG.exe`; the
 installer checks it), SteamVR and a headset with tracked controllers.
@@ -93,7 +100,7 @@ installer checks it), SteamVR and a headset with tracked controllers.
 - Only Steam build 569304 of the game is supported; any other build leaves the mod a plain XInput
   pass-through.
 
-Install: README.md, "Install (players)". Uninstall: `install_game.ps1 -Game "<game folder>"
+Install: README.md, "Install". Uninstall: `install_game.ps1 -Game "<game folder>"
 -Uninstall`, or delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` from the game folder.
 
 [Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...HEAD
