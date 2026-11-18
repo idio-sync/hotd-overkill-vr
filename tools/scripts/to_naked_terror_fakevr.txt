@@ -1,0 +1,33 @@
+# Like to_naked_terror_vr.txt, for mode=openvr with the fake SteamVR runtime (run.ps1 -OpenVR fake),
+# 1920x1200 back buffer: every menu click is the right controller pointed at the flat-screen overlay
+# (`fakevr aimov R hovr.screen X Y`: texture pixel X, Y of the screen overlay = back-buffer pixel)
+# and its trigger pulled; cutscenes are skipped with the left controller's B/Y (pause -> Escape).
+# Boot -> main menu -> House of the Dead: Overkill -> Story -> Naked Terror -> Start.
+wait 30000
+fakevr aimov R hovr.screen 1524 1010
+wait 300
+fakevr btn R trigger 150
+wait 4000
+fakevr aimov R hovr.screen 310 1018
+wait 300
+fakevr btn R trigger 150
+wait 4000
+fakevr aimov R hovr.screen 958 1016
+wait 300
+fakevr btn R trigger 150
+wait 4000
+fakevr aimov R hovr.screen 1170 888
+wait 300
+fakevr btn R trigger 150
+wait 1500
+fakevr aimov R hovr.screen 1624 1100
+wait 300
+fakevr btn R trigger 150
+wait 25000
+fakevr btn L b 150
+wait 10000
+fakevr btn L b 150
+wait 8000
+vr god 1
+fakevr ctl R 0.18 1.40 -0.35 0 -5 0
+log at gameplay

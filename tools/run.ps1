@@ -4,6 +4,7 @@ param(
     [string]$Game = 'C:\Users\Virtual\hotd-vr-game',
     [switch]$Stop,
     [switch]$Normal,  # start with a normal window instead of minimized
+    [switch]$NoStart, # install the DLLs and settings (-Mode, -OpenVR) without starting the game
     [ValidateSet('', 'off', 'sim', 'openvr')] [string]$Mode = '',  # hovr.ini [vr] mode for this run (kept)
     # Which openvr_api.dll the test copy gets (kept until changed): 'fake' = the fake SteamVR runtime
     # (out\fakevr, src/fakevr: tests without a headset; never starts SteamVR), 'real' = Valve's
@@ -21,8 +22,9 @@ if ($Stop) {
         $p = Get-Process -Id $id -ErrorAction SilentlyContinue
         if ($p -and $p.ProcessName -eq 'HOTD_NG') {
             Stop-Process -Id $id -Force
-            Wait-Process -Id $id -Timeout 60 -ErrorAction SilentlyContinue
-            Write-Output "stopped $id"
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Process -Id $id -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+            Write-Output $(if (Get-Process -Id $id -ErrorAction SilentlyContinue) { "process $id still exiting" } else { "stopped $id" })
         }
         else { Write-Output "process $id is not running" }
         Remove-Item $pidFile
@@ -85,6 +87,10 @@ if ($Mode) {
 }
 Remove-Item (Join-Path $hovr 'status.txt'), (Join-Path $hovr 'cmd.txt'), (Join-Path $hovr 'fakevr_cmd.txt') -ErrorAction SilentlyContinue
 Get-ChildItem $hovr -File | Where-Object Name -match '^(shot_\d+|frame_\d+)\.(png|txt)$' | Remove-Item
+if ($NoStart) {
+    Write-Output "installed (mode=$effective, openvr_api.dll: $(if (Test-FakeVR $gameOvr) { 'fake' } elseif (Test-Path $gameOvr) { 'real' } else { 'none' })); not started"
+    return
+}
 
 $style = if ($Normal -or -not $minimized) { 'Normal' } else { 'Minimized' }
 $p = Start-Process (Join-Path $Game 'HOTD_NG.exe') -WorkingDirectory $Game -WindowStyle $style -PassThru
