@@ -6,6 +6,13 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-18
+
+Comfort settings for the on-rails camera. The first session in a real headset (a Steam Frame)
+looked good; the one thing it found was that the rail camera's fast moves were too much, so this
+release softens them. Still an early pre-release: please report problems with your
+`hovr\hovr.log`.
+
 ### Added
 
 - **Comfort while the rail moves you**, all on by default (the first headset session, on a Steam
@@ -121,6 +128,7 @@ installer checks it), SteamVR and a headset with tracked controllers.
 Install: README.md, "Install". Uninstall: `install_game.ps1 -Game "<game folder>"
 -Uninstall`, or delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` from the game folder.
 
-[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/idio-sync/hotd-overkill-vr/compare/c96bde3...v0.1.1
 [0.1.0]: https://github.com/idio-sync/hotd-overkill-vr/tree/c96bde3

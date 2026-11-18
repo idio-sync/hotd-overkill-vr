@@ -26,12 +26,14 @@ Overkill* on Steam. With it, the on-rails shooter plays in a PC VR headset:
 ![Both eyes side by side, as the headset shows them: the same zombies and gun seen from two
 slightly different positions](media/stereo-pair.jpg)
 
-## Status: early, not yet tried in a headset
+## Status: early pre-release
 
-This is an early pre-release (0.1.x). **Nobody has played it in a real headset yet.** Everything
-has been tested on a PC without one, against a stand-in for SteamVR (that is where the pictures on
-this page come from). Expect rough edges: the aim may be a little off, the gun may sit oddly in
-your hand, menus may be hard to read.
+This is an early pre-release (0.1.x). It has had one short session in a real headset (a Steam
+Frame): stereo, head tracking, the gun and the menus looked good, and the comfort settings in 0.1.2
+came out of it. Most testing so far was on a PC without a headset, against a stand-in for SteamVR
+(that is where the pictures on this page come from). Expect rough edges: the aim may be a little
+off in fast turns, the gun may sit oddly in your hand, menus may be hard to read, and other
+headsets haven't been tried.
 
 If you try it, please say how it went in
 [GitHub issues](https://github.com/idio-sync/hotd-overkill-vr/issues), good or bad, and attach the
