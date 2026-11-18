@@ -240,7 +240,12 @@ static void do_handat(uintptr_t player) {
         for (int i = 0; i < 3; ++i) hit[i] = o[i] + d[i] * kMissDistance;
     float cam[3];
     if (!vr::world_point_to_camera(view, hit, g_vr.unit_m, cam)) return;
-    const float anchor_rh[3] = {cam[0], cam[1], -cam[2]};  // camera space (LH) -> anchor space (RH)
+    // Camera space (LH) -> anchor space (RH): undo the rail comfort rotation the hand goes through
+    // (vrsys_hand_in_game), then flip z.
+    const vr::Mat4 dl = comfort_rail_delta();
+    float c[3];
+    for (int i = 0; i < 3; ++i) c[i] = dl.m[0][i] * cam[0] + dl.m[1][i] * cam[1] + dl.m[2][i] * cam[2];
+    const float anchor_rh[3] = {c[0], c[1], -c[2]};
     logf("vr handat %.1f %.1f: camera ray %s at world %.1f %.1f %.1f (%.2f m ahead)", g_handat[0], g_handat[1], ok ? "hits" : "misses",
          hit[0], hit[1], hit[2], cam[2]);
     vrsys_sim_aim_at(anchor_rh);

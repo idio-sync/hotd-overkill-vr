@@ -97,6 +97,14 @@ struct VrConfig {
     bool head_bob = false;       // the game's head-bob while the rail moves
     bool recentre_resume = true; // recentre whenever gameplay resumes after a flat screen (pause, death, cutscene)
     bool keep_active = false;    // release: the game keeps running when its window loses focus
+    // Rail camera comfort (comfort.cpp, src/vr/comfort.h): live with `vr comfort ...`.
+    bool comfort_on = true;          // `vr comfort off|on`: all three below at once
+    float comfort_vignette = 0.6f;   // vignette strength at full rail speed (0 = off)
+    float vignette_turn_dps[2] = {30, 120};  // rail turn speed: vignette starts / full, deg/s
+    float vignette_move_mps[2] = {2, 6};     // rail speed: vignette starts / full, m/s
+    float vignette_ease_ms = 200;    // fade in/out time
+    float comfort_smooth_ms = 150;   // rotation smoothing time constant (0 = off)
+    int comfort_level = 1;           // horizon levelling: 0 off, 1 roll, 2 roll and pitch
 };
 extern VrConfig g_vr;
 // Release install, first start: write the default hovr\hovr.ini if it is missing (config.cpp).
@@ -119,7 +127,14 @@ void comfort_log();            // `vr comfort`
 void comfort_camlog(int frames);   // dev: log the camera position for the next N frames
 void comfort_log_shake(bool on);   // dev: log every non-zero shake/smack offset
 void comfort_log_actors(bool on);
-void comfort_allow_wiiview(bool on);  // dev: let the game's edge-pan answer through (to compare)  // dev: log each actor drawn through the entity draw (once per actor)
+void comfort_allow_wiiview(bool on);
+// Rail camera comfort: smoothing, levelling, vignette (comfort.cpp; the math in src/vr/comfort.h).
+void comfort_rail_frame(const vr::Mat4& view);  // stereo.cpp: once per stereo frame, the frame's game view
+vr::Mat4 comfort_rail_delta();   // camera-space rotation applied to the eyes and the gun hand (vrsys.cpp)
+float comfort_vignette_now();    // vignette strength to draw this frame (0..1)
+void comfort_command(const std::string& sub, const std::vector<std::string>& args);  // `vr comfort SUB ...`
+void comfort_log_settings(const char* why);
+void comfort_log_now(const char* why);  // the rail camera's speeds, the vignette and the smoothing lag now  // dev: let the game's edge-pan answer through (to compare)  // dev: log each actor drawn through the entity draw (once per actor)
 
 // The controller gun (gun.cpp): detours on the game's shot paths and cursor setters, installed
 // from the first Present (after SecuROM's start-up patching).
@@ -354,6 +369,9 @@ void mirror_stereo(IDirect3DDevice9* dev, IDirect3DTexture9* eyes, IDirect3DText
 void mirror_flat(IDirect3DDevice9* dev, IDirect3DTexture9* screen);
 void mirror_release();
 void draw_dots(IDirect3DDevice9* dev, IDirect3DSurface9* target, const float (*xy)[2], int n, float radius, D3DCOLOR colour);
+// Black triangles (a list, x, y in target pixels, per-vertex opacity) blended over `target`
+// inside `clip`; colour only, the target's alpha is kept (the vignette).
+void draw_shade(IDirect3DDevice9* dev, IDirect3DSurface9* target, const float (*xya)[3], int n, const RECT& clip);
 
 // Engine patches (engine.cpp): frame limiter, culling widening.
 void engine_frame(bool stereo_next_frame);  // once per Present

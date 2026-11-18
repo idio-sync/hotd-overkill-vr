@@ -8,6 +8,7 @@
 #include "common.h"
 
 #include <cmath>
+#include <vector>
 
 #include "../vr/xform.h"
 
@@ -167,6 +168,56 @@ void draw_dots(IDirect3DDevice9* dev, IDirect3DSurface9* target, const float (*x
         }
         raw_dpup(dev, D3DPT_TRIANGLEFAN, 8, fan, sizeof(CV));
     }
+    raw_set_rt(dev, 0, rt);
+    raw_set_depth(dev, ds);
+    g_sb->Apply();
+    if (rt) rt->Release();
+    if (ds) ds->Release();
+}
+
+// Black triangles with per-vertex opacity over `target` (the vignette), inside `clip`; the
+// target's alpha is left alone. State saved and restored as for the dots.
+void draw_shade(IDirect3DDevice9* dev, IDirect3DSurface9* target, const float (*xya)[3], int n, const RECT& clip) {
+    if (!target || n < 3) return;
+    if (!g_sb && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &g_sb))) return;
+    D3DSURFACE_DESC d{};
+    target->GetDesc(&d);
+    g_sb->Capture();
+    IDirect3DSurface9 *rt = nullptr, *ds = nullptr;
+    dev->GetRenderTarget(0, &rt);
+    dev->GetDepthStencilSurface(&ds);
+    raw_set_rt(dev, 0, target);
+    raw_set_depth(dev, nullptr);
+    D3DVIEWPORT9 vp = {0, 0, d.Width, d.Height, 0, 1};
+    raw_set_viewport(dev, &vp);
+    raw_set_scissor(dev, &clip);
+    raw_set_vs(dev, nullptr);
+    raw_set_ps(dev, nullptr);
+    raw_set_texture(dev, 0, nullptr);
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    const struct { D3DRENDERSTATETYPE s; DWORD v; } rs[] = {
+        {D3DRS_ZENABLE, FALSE}, {D3DRS_ZWRITEENABLE, FALSE}, {D3DRS_ALPHABLENDENABLE, TRUE}, {D3DRS_SRCBLEND, D3DBLEND_SRCALPHA},
+        {D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA}, {D3DRS_BLENDOP, D3DBLENDOP_ADD}, {D3DRS_ALPHATESTENABLE, FALSE},
+        {D3DRS_CULLMODE, D3DCULL_NONE}, {D3DRS_SCISSORTESTENABLE, TRUE}, {D3DRS_STENCILENABLE, FALSE},
+        {D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE},
+        {D3DRS_SRGBWRITEENABLE, FALSE}, {D3DRS_FOGENABLE, FALSE}, {D3DRS_LIGHTING, FALSE}, {D3DRS_SEPARATEALPHABLENDENABLE, FALSE},
+        {D3DRS_FILLMODE, D3DFILL_SOLID}, {D3DRS_SHADEMODE, D3DSHADE_GOURAUD}};
+    for (auto& r : rs) raw_set_rs(dev, r.s, r.v);
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    struct CV {
+        float x, y, z, rhw;
+        D3DCOLOR c;
+    };
+    std::vector<CV> v(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const float a = xya[i][2] < 0 ? 0.f : xya[i][2] > 1 ? 1.f : xya[i][2];
+        v[size_t(i)] = {xya[i][0], xya[i][1], .5f, 1, D3DCOLOR_ARGB(DWORD(a * 255 + 0.5f), 0, 0, 0)};
+    }
+    raw_dpup(dev, D3DPT_TRIANGLELIST, UINT(n / 3), v.data(), sizeof(CV));
     raw_set_rt(dev, 0, rt);
     raw_set_depth(dev, ds);
     g_sb->Apply();

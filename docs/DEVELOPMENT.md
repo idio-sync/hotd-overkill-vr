@@ -167,6 +167,16 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   forward axis for N frames), `vr shakelog 1`, `vr actors 1` (every actor the entity draw sees),
   `vr waithit [MS]` (the command queue waits until player 1 is hit), `vr measure` (world-scale ray
   casts: floor, ceiling, walls, zombie heights).
+- Rail comfort (vignette, smoothing, levelling; `src/vr/comfort.h`): `vr comfort on|off` (all
+  three), `vr comfort vignette X`, `vr comfort turn A B` (deg/s), `vr comfort move A B` (m/s),
+  `vr comfort ease MS`, `vr comfort smooth MS`, `vr comfort level 0|1|2`, each logged with the
+  resulting settings; `vr comfort stats [S]` logs the rail camera's turn and move speed
+  percentiles (smoothed over 100 ms, as the vignette sees them) over the last S seconds (30), the
+  camera cuts, how often the vignette was on and the smoothing lag. A/B in the headset: play a
+  stretch with `vr comfort off`, then `vr comfort on`, and compare; `stats` after a fast section
+  shows where to put `turn`/`move`. `vr comfort wait [X] [MS]` holds the command queue until the
+  vignette reaches X; on a timeout it skips to the next `vr comfort end` (captures during fast turns:
+  `vr comfort wait 0.5 1200`, `fakevr capture NAME`, `vr comfort end`).
 
 ## Fake SteamVR runtime (tests without a headset)
 
@@ -353,6 +363,13 @@ recentre on resume) feel right.
 - No head-bob was seen in this build (the camera kept a constant height over 15 m of rail);
   `head_bob=0` only holds the game's bob amplitudes at zero as a safety net.
 - Looking more than `cone_deg` away from the rail camera's direction can show objects culled by the
-  game.
+  game. With `comfort_smooth_ms` the view can lag the rail camera by up to `cone_deg/2`, which
+  leaves the other half for the head on that side.
+- During fast rail turns the hit marker (`marker=1`) is drawn up to a few degrees beside the barrel
+  line (fake runtime, Naked Terror: 2-16 degrees at 90-310 deg/s, with or without the comfort
+  smoothing): the aim point comes from the game frame before the one drawn. With the camera still
+  it sits on the barrel line, also with a 15-degree smoothing lag held (`smooth 5000`, 2026-11-18).
+  Naked Terror's rail turns at up to ~575 deg/s (100 ms average), ~1000 deg/s in a single frame;
+  no camera cuts were seen there.
 - Only Steam build 569304 of `HOTD_NG.exe` is supported; any other build leaves the mod a plain
   XInput pass-through (the mod checks this itself at every start).

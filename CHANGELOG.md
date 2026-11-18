@@ -6,6 +6,24 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Comfort while the rail moves you**, all on by default (the first headset session, on a Steam
+  Frame, found the rail camera's fast moves too much):
+  - a **vignette** that darkens the edges of each eye while the rail camera turns or moves fast
+    (`comfort_vignette=0.6`; starts at 30 deg/s or 2 m/s, full at 120 deg/s or 6 m/s:
+    `vignette_turn_dps`, `vignette_move_mps`; fades over `vignette_ease_ms=200`). Camera cuts
+    don't trigger it; the HUD panel stays clear.
+  - **smoothed turns**: the view follows the rail camera's orientation through a 150 ms filter
+    (`comfort_smooth_ms`; position is not smoothed), lag capped at half of `cone_deg`, no
+    smoothing across camera cuts. The gun aims through the same smoothed view, so shots still go
+    where the barrel points.
+  - a **level horizon**: the rail camera's roll is removed (`comfort_level=1`; `2` also removes
+    its pitch).
+  - Development commands: `vr comfort on|off|vignette X|smooth MS|level N|turn A B|move A B|ease MS`
+    switch them live, `vr comfort stats [S]` logs the rail camera's speed percentiles and how often
+    the vignette was on, for tuning.
+
 ### Changed
 
 - The README is written for players, with screenshots; the full settings list moved to

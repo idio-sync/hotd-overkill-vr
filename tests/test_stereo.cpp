@@ -9,6 +9,7 @@
 
 #include "../src/vr/stereo.h"
 #include "../src/vr/aim.h"
+#include "../src/vr/comfort.h"
 #include "../src/vr/gunpose.h"
 #include "../src/vr/xform.h"
 #include "../src/vr/harness.h"
@@ -682,7 +683,307 @@ static void test_default_settings_written_only_when_missing() {
     fs::remove_all(root, ec);
 }
 
+// --- rail camera comfort (src/vr/comfort.h) ---
+
+static float deg(float rad) { return rad * 180 / kPi; }
+static float rad(float d) { return d * kPi / 180; }
+
+// A camera rotation (left-handed, +y up): yaw right, pitch up, then roll (right side down).
+static Mat4 cam_rot(float yaw_deg, float pitch_deg, float roll_deg) {
+    Mat4 rz = identity();
+    const float c = std::cos(rad(roll_deg)), s = std::sin(rad(roll_deg));
+    // Roll about +z (forward): +x (right) towards -y (down).
+    rz.m[0][0] = c, rz.m[0][1] = s, rz.m[1][0] = -s, rz.m[1][1] = c;
+    return mul(rotation_yaw_pitch(rad(yaw_deg), rad(pitch_deg)), rz);
+}
+
+static Mat4 cam_pose(float yaw_deg, float pitch_deg, float roll_deg, float x, float y, float z) {
+    return mul(translation(x, y, z), cam_rot(yaw_deg, pitch_deg, roll_deg));
+}
+
+static RailComfortSettings plain_settings() {
+    RailComfortSettings s;
+    s.smooth_ms = 0;
+    s.level = 0;
+    s.vignette = 0;
+    s.cone_deg = 90;
+    return s;
+}
+
+static void test_comfort_quaternions() {
+    const Mat4 r = cam_rot(37, -12, 8);
+    const Mat4 back = rotation_from_quat(quat_from_rotation(r));
+    CHECK(max_abs_diff(r, back) < 1e-5f);
+    CHECK_NEAR(deg(rotation_angle(cam_rot(10, 0, 0), cam_rot(40, 0, 0))), 30, 1e-3);
+    CHECK_NEAR(deg(rotation_angle(cam_rot(0, 0, 0), cam_rot(0, 0, 25))), 25, 1e-3);
+    // Roll doesn't move the forward axis; yaw does.
+    CHECK_NEAR(deg(forward_angle(cam_rot(0, 0, 0), cam_rot(0, 0, 25))), 0, 1e-3);
+    CHECK_NEAR(deg(forward_angle(cam_rot(0, 0, 0), cam_rot(20, 0, 0))), 20, 1e-3);
+    // Small per-frame angles are resolved (1 deg/s at 120 Hz).
+    CHECK_NEAR(deg(rotation_angle(cam_rot(5, 0, 0), cam_rot(5 + 1.f / 120, 0, 0))), 1.0 / 120, 2e-4);
+    // Slerp halfway.
+    const Quat h = quat_slerp(quat_from_rotation(cam_rot(0, 0, 0)), quat_from_rotation(cam_rot(60, 0, 0)), 0.5);
+    CHECK(max_abs_diff(rotation_from_quat(h), cam_rot(30, 0, 0)) < 1e-5f);
+}
+
+static void test_comfort_levelling() {
+    const Mat4 r = cam_rot(30, 10, 20);
+    // Level 1: forward kept, roll gone (right axis horizontal, up above the horizon), heading kept.
+    const Mat4 l1 = level_rotation(r, 1);
+    for (int i = 0; i < 3; ++i) CHECK_NEAR(l1.m[i][2], r.m[i][2], 1e-5);
+    CHECK_NEAR(l1.m[1][0], 0, 1e-6);
+    CHECK(l1.m[1][1] > 0.9f);
+    CHECK(max_abs_diff(l1, cam_rot(30, 10, 0)) < 1e-5f);
+    // Level 2: yaw only.
+    const Mat4 l2 = level_rotation(r, 2);
+    CHECK(max_abs_diff(l2, cam_rot(30, 0, 0)) < 1e-5f);
+    // Level 0 and a camera that is already level: unchanged.
+    CHECK(max_abs_diff(level_rotation(r, 0), r) < 1e-7f);
+    CHECK(max_abs_diff(level_rotation(cam_rot(-70, 5, 0), 1), cam_rot(-70, 5, 0)) < 1e-5f);
+    // Rows stay orthonormal.
+    const Mat4 p = mul(l1, rigid_inverse(l1));
+    CHECK(max_abs_diff(p, identity()) < 1e-5f);
+    // Straight down: no heading, left as it is.
+    CHECK(max_abs_diff(level_rotation(cam_rot(10, -90, 30), 1), cam_rot(10, -90, 30)) < 1e-6f);
+
+    // Through the filter: a rolled rail camera gives a level view (D = R_g^T R_s), yaw kept.
+    RailComfortSettings s = plain_settings();
+    s.level = 1;
+    RailComfort rc;
+    rc.update(cam_pose(30, 10, 20, 100, 200, 300), 0.01f, 1.f / 120, s);
+    const Mat4 view_rot = mul(cam_rot(30, 10, 20), rc.delta());
+    CHECK(max_abs_diff(view_rot, cam_rot(30, 10, 0)) < 1e-5f);
+    s.level = 2;
+    rc.update(cam_pose(30, 10, 20, 100, 200, 300), 0.01f, 1.f / 120, s);
+    CHECK(max_abs_diff(mul(cam_rot(30, 10, 20), rc.delta()), cam_rot(30, 0, 0)) < 1e-5f);
+    // Switched off: the game camera as it is.
+    s.enabled = false;
+    rc.update(cam_pose(30, 10, 20, 100, 200, 300), 0.01f, 1.f / 120, s);
+    CHECK(max_abs_diff(rc.delta(), identity()) < 1e-6f);
+}
+
+static void test_comfort_smoothing_step() {
+    RailComfortSettings s = plain_settings();
+    s.smooth_ms = 150;
+    RailComfort rc;
+    const float dt = 1.f / 120;
+    rc.update(cam_pose(0, 0, 0, 0, 0, 0), 0.01f, dt, s);
+    CHECK(rc.fresh());
+    CHECK(max_abs_diff(rc.delta(), identity()) < 1e-6f);  // starts on the camera
+    // The rail camera turns 30 degrees in one frame (under the cut threshold) and stays there.
+    // The view follows exponentially: after one time constant 1/e of the turn is left.
+    int frames = 0;
+    for (; frames < 18; ++frames) rc.update(cam_pose(30, 0, 0, 0, 0, 0), 0.01f, dt, s);  // 18 frames = 150 ms
+    CHECK(!rc.cut());
+    CHECK_NEAR(rc.lag_deg(), 30 * std::exp(-1.0), 0.05);
+    // The view's orientation is the game camera's turned back by the lag, about +y.
+    const Mat4 view_rot = mul(cam_rot(30, 0, 0), rc.delta());
+    CHECK(max_abs_diff(view_rot, cam_rot(float(30 - 30 * std::exp(-1.0)), 0, 0)) < 1e-3f);
+    for (; frames < 120; ++frames) rc.update(cam_pose(30, 0, 0, 0, 0, 0), 0.01f, dt, s);
+    CHECK(rc.lag_deg() < 0.1f);
+    // smooth_ms = 0: no lag at all.
+    s.smooth_ms = 0;
+    rc.update(cam_pose(50, 0, 0, 0, 0, 0), 0.01f, dt, s);
+    CHECK(max_abs_diff(rc.delta(), identity()) < 1e-5f);
+}
+
+static void test_comfort_cut_snaps() {
+    RailComfortSettings s = plain_settings();
+    s.smooth_ms = 150;
+    s.vignette = 1;
+    const float dt = 1.f / 120;
+    RailComfort rc;
+    for (int i = 0; i < 60; ++i) rc.update(cam_pose(0, 0, 0, 0, 0, 0), 0.01f, dt, s);
+    // A cut: 90 degrees in one frame. No lag behind it, no speed, no vignette.
+    rc.update(cam_pose(90, 0, 0, 0, 0, 0), 0.01f, dt, s);
+    CHECK(rc.cut());
+    CHECK(max_abs_diff(rc.delta(), identity()) < 1e-5f);
+    CHECK_NEAR(rc.turn_dps(), 0, 1e-6);
+    for (int i = 0; i < 60; ++i) {
+        rc.update(cam_pose(90, 0, 0, 0, 0, 0), 0.01f, dt, s);
+        CHECK(rc.vignette() == 0);
+    }
+    // A jump of 2 m (200 units) in one frame: a cut too.
+    rc.update(cam_pose(90, 0, 0, 200, 0, 0), 0.01f, dt, s);
+    CHECK(rc.cut());
+    CHECK_NEAR(rc.move_mps(), 0, 1e-6);
+    // 20 cm in a frame (24 m/s) is motion, not a cut.
+    rc.update(cam_pose(90, 0, 0, 220, 0, 0), 0.01f, dt, s);
+    CHECK(!rc.cut());
+    CHECK(rc.move_mps() > 1);
+    // A gap (flat frames between) starts afresh: on the camera, no speed, no vignette.
+    rc.update(cam_pose(0, 0, 0, 0, 0, 0), 0.01f, 0.5f, s);
+    CHECK(rc.fresh());
+    CHECK(max_abs_diff(rc.delta(), identity()) < 1e-5f);
+    CHECK(rc.vignette() == 0);
+}
+
+static void test_comfort_lag_cap() {
+    RailComfortSettings s = plain_settings();
+    s.smooth_ms = 150;
+    s.cone_deg = 35;
+    const float dt = 1.f / 120;
+    RailComfort rc;
+    // A steady 200 deg/s turn: the exponential lag would settle at 200 * 0.15 = 30 degrees; it is
+    // held at cone_deg / 2.
+    float yaw = 0;
+    bool capped = false;
+    for (int i = 0; i < 120; ++i) {
+        yaw += 200 * dt;
+        rc.update(cam_pose(yaw, 0, 0, 0, 0, 0), 0.01f, dt, s);
+        CHECK(rc.lag_deg() <= 17.5f + 0.01f);
+        capped = capped || rc.capped();
+    }
+    CHECK(capped);
+    CHECK_NEAR(rc.lag_deg(), 17.5, 0.05);
+    // A slow 60 deg/s turn stays under the cap: lag ~ 60 * 0.15 = 9 degrees.
+    RailComfort slow;
+    yaw = 0;
+    for (int i = 0; i < 240; ++i) {
+        yaw += 60 * dt;
+        slow.update(cam_pose(yaw, 0, 0, 0, 0, 0), 0.01f, dt, s);
+    }
+    CHECK(!slow.capped());
+    CHECK_NEAR(slow.lag_deg(), 8.75, 0.2);  // discrete steps: 0.5 deg/frame * a / (1 - a), a = exp(-dt/tau)
+    // Its speed reads 60 deg/s.
+    CHECK_NEAR(slow.turn_dps(), 60, 0.5);
+    // A rolled, pitched camera whipping round at 400 deg/s: capped, and the view stays level.
+    s.level = 1;
+    RailComfort rolled;
+    yaw = 0;
+    for (int i = 0; i < 60; ++i) {
+        yaw += 400 * dt;
+        rolled.update(cam_pose(yaw, -15, 10, 0, 0, 0), 0.01f, dt, s);
+        const Mat4 v = mul(cam_rot(yaw, -15, 10), rolled.delta());
+        CHECK_NEAR(v.m[1][0], 0, 1e-4);  // right axis horizontal
+        CHECK(rolled.lag_deg() <= 17.5f + 0.01f);
+    }
+    CHECK(rolled.capped());
+}
+
+static void test_comfort_vignette_mapping() {
+    RailComfortSettings s;
+    s.vignette = 0.6f;
+    CHECK_NEAR(vignette_target(s, 0, 0), 0, 0);
+    CHECK_NEAR(vignette_target(s, 30, 2), 0, 1e-6);
+    CHECK_NEAR(vignette_target(s, 75, 0), 0.3, 1e-5);   // halfway on the turn ramp
+    CHECK_NEAR(vignette_target(s, 0, 4), 0.3, 1e-5);    // halfway on the move ramp
+    CHECK_NEAR(vignette_target(s, 75, 6), 0.6, 1e-5);   // the larger of the two
+    CHECK_NEAR(vignette_target(s, 500, 0), 0.6, 1e-6);  // capped at the strength
+    s.vignette = 0;
+    CHECK_NEAR(vignette_target(s, 500, 50), 0, 0);
+    // The shape: clear inside, opacity e outside, monotonic between; stronger = smaller clear area.
+    CHECK_NEAR(vignette_alpha(0.6f, 10), 0, 0);
+    CHECK_NEAR(vignette_alpha(0.6f, vignette_inner_deg(0.6f)), 0, 1e-6);
+    CHECK_NEAR(vignette_alpha(0.6f, vignette_inner_deg(0.6f) + kVignetteFalloffDeg), 0.96, 1e-5);
+    CHECK_NEAR(vignette_alpha(0.6f, 85), 0.96, 1e-5);
+    CHECK_NEAR(vignette_inner_deg(0.6f), 35, 1e-4);
+    CHECK_NEAR(vignette_alpha(1, 40), 1, 1e-6);   // full strength: black beyond 40 degrees
+    CHECK_NEAR(vignette_alpha(0.3f, 85), 0.48, 1e-5);
+    // At the default strength the eye's edges (45-52 degrees) are clearly dark, the middle clear.
+    CHECK(vignette_alpha(0.6f, 45) > 0.6f);
+    CHECK_NEAR(vignette_alpha(0.6f, 30), 0, 0);
+    float last = 0;
+    for (float a = 0; a <= 90; a += 1) {
+        const float v = vignette_alpha(0.6f, a);
+        CHECK(v >= last - 1e-7f);
+        last = v;
+    }
+    CHECK(vignette_inner_deg(1) < vignette_inner_deg(0.3f));
+    CHECK_NEAR(vignette_alpha(0, 80), 0, 0);
+    // Through the filter: a still camera, then a fast turn: the vignette eases in over ease_ms,
+    // and out again when the camera stops.
+    RailComfortSettings f = plain_settings();
+    f.vignette = 0.6f;
+    f.ease_ms = 200;
+    RailComfort rc;
+    const float dt = 1.f / 120;
+    for (int i = 0; i < 30; ++i) rc.update(cam_pose(0, 0, 0, 0, 0, 0), 0.01f, dt, f);
+    CHECK(rc.vignette() == 0);
+    float yaw = 0;
+    for (int i = 0; i < 12; ++i) {  // 100 ms at 180 deg/s
+        yaw += 180 * dt;
+        rc.update(cam_pose(yaw, 0, 0, 0, 0, 0), 0.01f, dt, f);
+    }
+    CHECK(rc.vignette() > 0.1f && rc.vignette() < 0.6f);  // on its way in, eased
+    for (int i = 0; i < 60; ++i) {
+        yaw += 180 * dt;
+        rc.update(cam_pose(yaw, 0, 0, 0, 0, 0), 0.01f, dt, f);
+    }
+    CHECK_NEAR(rc.vignette(), 0.6, 1e-4);
+    CHECK_NEAR(rc.turn_dps(), 180, 1);
+    for (int i = 0; i < 60; ++i) rc.update(cam_pose(yaw, 0, 0, 0, 0, 0), 0.01f, dt, f);
+    CHECK_NEAR(rc.vignette(), 0, 1e-6);
+    // Fast forward motion (5 m/s) at 120 Hz.
+    float z = 0;
+    for (int i = 0; i < 120; ++i) {
+        z += 500 * dt;
+        rc.update(cam_pose(yaw, 0, 0, 0, 0, z), 0.01f, dt, f);
+    }
+    CHECK_NEAR(rc.move_mps(), 5, 0.01);
+    CHECK_NEAR(rc.vignette(), 0.6f * 0.75f, 1e-3);
+}
+
+// The aim stays exact under smoothing and levelling: the world point the gun's ray reaches is
+// where the eyes see the barrel pointing - the same eye-relative position as the tracked barrel.
+static void test_comfort_aim_matches_eyes() {
+    RailComfortSettings s = plain_settings();
+    s.smooth_ms = 150;
+    s.level = 1;
+    s.cone_deg = 35;
+    RailComfort rc;
+    const float dt = 1.f / 120;
+    float yaw = 10;
+    for (int i = 0; i < 40; ++i) {  // a rolled, pitched camera turning at 90 deg/s: D is far from identity
+        yaw += 90 * dt;
+        rc.update(cam_pose(yaw, -8, 12, 2766, 160, 6676), 0.01f, dt, s);
+    }
+    const Mat4 d = rc.delta();
+    CHECK(rotation_angle(d, identity()) > rad(10));
+    Mat4 view;
+    CHECK(invert(cam_pose(yaw, -8, 12, 2766, 160, 6676), &view));
+    // Tracked poses (right-handed, relative to the anchor): the head and the gun hand.
+    const Mat4 anchor = translation(0.3f, 1.6f, -0.2f);
+    const Mat4 head_rh = mul(anchor, mul(translation(0.05f, 0.02f, 0.03f), rh_yaw_pitch(rad(15), rad(-5))));
+    const Mat4 hand_rh = mul(anchor, mul(translation(0.25f, -0.3f, -0.35f), rh_yaw_pitch(rad(-20), rad(8))));
+    const float ipd = 0.064f;
+    for (int eye = 0; eye < 2; ++eye) {
+        const Mat4 eye_to_head = translation(eye ? ipd / 2 : -ipd / 2, 0, 0);
+        // As the mod does it (vrsys.cpp): D on top of the eye pose and on top of the hand pose.
+        const Mat4 eye_cam = mul(d, eye_in_game(head_in_game(anchor, head_rh), eye_to_head));
+        const Mat4 hand_cam = mul(d, pose_in_game(anchor, hand_rh));
+        Ray w;
+        CHECK(camera_ray_to_world(view, pose_ray_lh(hand_cam), 0.01f, &w));
+        const float p[3] = {w.o[0] + 500 * w.d[0], w.o[1] + 500 * w.d[1], w.o[2] + 500 * w.d[2]};  // 5 m out
+        // The eye sees that world point at (eye view of the camera-space point) ...
+        const Mat4 to_eye = mul(eye_view(eye_cam, 0.01f), view);
+        const Vec4 seen = apply(to_eye, {p[0], p[1], p[2], 1});
+        // ... which must be where the tracked barrel's point 5 m out is relative to the tracked eye.
+        const Ray r = pose_ray_rh(hand_rh);
+        const float q[3] = {r.o[0] + 5 * r.d[0], r.o[1] + 5 * r.d[1], r.o[2] + 5 * r.d[2]};
+        const Mat4 eye_rh = mul(head_rh, eye_to_head);
+        const Vec4 e = apply(rigid_inverse(eye_rh), {q[0], q[1], q[2], 1});
+        // Eye space: game units, left-handed (z forward); tracked: metres, right-handed.
+        CHECK_NEAR(seen.x * 0.01f, e.x, 1e-3);
+        CHECK_NEAR(seen.y * 0.01f, e.y, 1e-3);
+        CHECK_NEAR(seen.z * 0.01f, -e.z, 1e-3);
+        // Sanity: had the hand skipped D, the shot would land elsewhere.
+        Ray w2;
+        CHECK(camera_ray_to_world(view, pose_ray_lh(pose_in_game(anchor, hand_rh)), 0.01f, &w2));
+        const float p2[3] = {w2.o[0] + 500 * w2.d[0], w2.o[1] + 500 * w2.d[1], w2.o[2] + 500 * w2.d[2]};
+        const Vec4 seen2 = apply(to_eye, {p2[0], p2[1], p2[2], 1});
+        CHECK(std::fabs(seen2.x * 0.01f - e.x) + std::fabs(seen2.y * 0.01f - e.y) > 0.3f);
+    }
+}
+
 int main() {
+    test_comfort_quaternions();
+    test_comfort_levelling();
+    test_comfort_smoothing_step();
+    test_comfort_cut_snaps();
+    test_comfort_lag_cap();
+    test_comfort_vignette_mapping();
+    test_comfort_aim_matches_eyes();
     test_harness_plan();
     test_default_settings_written_only_when_missing();
     test_model_to_gun();
@@ -712,6 +1013,6 @@ int main() {
         std::printf("%d failure(s)\n", g_failures);
         return 1;
     }
-    std::printf("all stereo, xform, aim, harness and settings-file tests passed\n");
+    std::printf("all stereo, xform, aim, comfort, harness and settings-file tests passed\n");
     return 0;
 }

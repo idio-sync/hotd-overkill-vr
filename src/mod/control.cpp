@@ -55,7 +55,19 @@
 //   vr gun                  log player 1's weapon, ammo and the controller aim
 //   vr god 0|1              dev: keep player 1's health full (player+0x20C)
 //   vr arms|shake|bob 0|1   switch game_arms / camera_shake / head_bob live (and log)
-//   vr comfort              log the comfort state (arms draws hidden, largest shake offsets, head-bob, edge-pan)
+//   vr comfort              log the comfort state (arms draws hidden, largest shake offsets, head-bob, edge-pan,
+//                           the rail camera comfort settings)
+//   vr comfort on|off       rail camera comfort (vignette, smoothing, levelling) all on / all off
+//   vr comfort vignette X   vignette strength at full speed, 0..1 (0 = off)
+//   vr comfort turn A B     rail turn speed (deg/s) where the vignette starts / is full
+//   vr comfort move A B     rail speed (m/s) where the vignette starts / is full
+//   vr comfort ease MS      vignette fade in/out time
+//   vr comfort smooth MS    rotation smoothing time constant (0 = off)
+//   vr comfort level N      horizon levelling: 0 as the game, 1 roll removed, 2 roll and pitch removed
+//   vr comfort stats [S]    the rail camera's turn/move speed percentiles over the last S seconds (30),
+//                           how often the vignette was on, the smoothing lag, the camera's roll
+//   vr comfort wait [X] [MS]  dev: the queue waits until the vignette reaches X (0.1); if MS (60000) pass
+//                           first, the lines up to the next `vr comfort end` are skipped
 //   vr camlog [N]           dev: log the camera position and forward axis for the next N frames (120)
 //   vr shakelog 0|1         dev: log every non-zero camera shake/smack offset
 //   vr actors 0|1           dev: log each actor drawn through the entity draw 0x7697A0 (once per actor)
@@ -88,6 +100,7 @@ namespace hv {
 static std::deque<std::string> g_queue;
 static ULONGLONG g_wait_until;
 static int g_wait_hits = -1;  // `vr waithit`: the queue waits until player 1's hit count passes this
+static float g_wait_vignette = -1;  // `vr comfort wait X`: the queue waits until the vignette reaches X
 static WORD g_buttons;
 static int g_shot_no;
 
@@ -198,7 +211,20 @@ FrameRequests control_tick() {
         g_wait_hits = -1;
         g_wait_until = now;
     }
-    while (!g_queue.empty() && now >= g_wait_until && g_wait_hits < 0) {
+    if (g_wait_vignette >= 0 && (comfort_vignette_now() >= g_wait_vignette || now >= g_wait_until)) {
+        const bool reached = comfort_vignette_now() >= g_wait_vignette;
+        comfort_log_now(reached ? "vr comfort wait: reached" : "vr comfort wait: timed out; skipping to `vr comfort end`");
+        if (!reached) {  // drop the lines up to the next `vr comfort end`
+            while (!g_queue.empty()) {
+                const std::string l = g_queue.front();
+                g_queue.pop_front();
+                if (l.rfind("vr comfort end", 0) == 0) break;
+            }
+        }
+        g_wait_vignette = -1;
+        g_wait_until = now;
+    }
+    while (!g_queue.empty() && now >= g_wait_until && g_wait_hits < 0 && g_wait_vignette < 0) {
         std::string line = g_queue.front();
         g_queue.pop_front();
         std::stringstream ss(line);
@@ -376,6 +402,17 @@ FrameRequests control_tick() {
                 gun_log_actions(v != 0);
             } else if (what == "god") {
                 gun_set_god(v != 0);
+            } else if (what == "comfort" && a == "wait") {
+                std::string x, ms;
+                ss >> x >> ms;
+                g_wait_vignette = x.empty() ? 0.1f : strtof(x.c_str(), nullptr);
+                g_wait_until = now + (ms.empty() ? 60000 : ULONGLONG(atoi(ms.c_str())));
+            } else if (what == "comfort" && a == "end") {
+                // the end of a `vr comfort wait` block
+            } else if (what == "comfort" && !a.empty()) {
+                std::vector<std::string> args;
+                for (std::string t; ss >> t;) args.push_back(t);
+                comfort_command(a, args);
             } else if (what == "arms" || what == "shake" || what == "bob" || what == "comfort") {
                 if (!a.empty() && what != "comfort") {
                     bool& flag = what == "arms" ? g_vr.game_arms : what == "shake" ? g_vr.camera_shake : g_vr.head_bob;

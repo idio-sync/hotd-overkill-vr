@@ -297,10 +297,12 @@ void vrsys_wait_poses() {
     g_hand_head = g_head;
 }
 
-// The gun hand through the same transform as the head (xform.h pose_in_game).
+// The gun hand through the same transform as the head (xform.h pose_in_game), with the rail
+// comfort rotation (comfort.cpp, src/vr/comfort.h) on top, as the eyes have it.
 bool vrsys_hand_in_game(vr::Mat4* pose_lh) {
+    const vr::Mat4 d = comfort_rail_delta();
     std::lock_guard lock(g_hand_mx);
-    *pose_lh = vr::pose_in_game(g_hand_anchor, g_hand);
+    *pose_lh = vr::mul(d, vr::pose_in_game(g_hand_anchor, g_hand));
     return g_hand_valid;
 }
 
@@ -350,9 +352,10 @@ void vrsys_sim_aim_at(const float p[3]) {
 // Eye `eye` relative to the anchor (right-handed, metres).
 vr::Mat4 vrsys_eye_in_anchor(int eye) { return vr::mul(vr::mul(vr::rigid_inverse(g_anchor), g_head), g_eye_to_head[eye]); }
 
-// Eye pose in the game camera's space (left-handed, metres) and, in openvr mode, its tangents.
+// Eye pose in the game camera's space (left-handed, metres) and, in openvr mode, its tangents. The
+// rail comfort rotation (smoothing, levelling) goes on top, the same one as the gun hand's.
 bool vrsys_eye(int eye, vr::Mat4* pose_lh, float tan[4]) {
-    *pose_lh = vr::eye_in_game(vr::head_in_game(g_anchor, g_head), g_eye_to_head[eye]);
+    *pose_lh = vr::mul(comfort_rail_delta(), vr::eye_in_game(vr::head_in_game(g_anchor, g_head), g_eye_to_head[eye]));
     if (!g_openvr) return false;
     for (int i = 0; i < 4; ++i) tan[i] = g_tan[eye][i];
     return true;

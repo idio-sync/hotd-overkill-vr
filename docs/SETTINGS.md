@@ -42,6 +42,12 @@ is in the [README](../README.md#settings).
 | `camera_shake` | `0` | `1`: the game's camera shake and hit jolts (turns of up to ~30 degrees when a zombie hits you) |
 | `head_bob` | `0` | `1`: the game's head-bob while the rail moves (none was seen in the levels checked) |
 | `recentre_resume` | `1` | recentre whenever gameplay resumes after a flat screen (pause, death screen and continue, cutscenes, the next chapter), as at a level start |
+| `comfort_vignette` | `0.6` | darkens the edges of each eye while the rail camera turns or moves fast (a "tunnel" that hides the fast-moving periphery). The strength at full speed: `0` = off; at `0.6` the view is clear within 35 degrees of the eye's centre and 96% dark beyond 50 (the edges of the headset's view); `1` = black beyond 40 degrees, clear inside 25. Lower values are lighter and wider (`0.3`: at most 48% dark, from 42 degrees out). In between the speed thresholds it scales with the speed. Drawn under the HUD panel; camera cuts don't trigger it |
+| `vignette_turn_dps` | `30,120` | rail camera turn speed (degrees per second, measured over ~100 ms) where the vignette starts / reaches full strength |
+| `vignette_move_mps` | `2,6` | rail camera speed (metres per second) where the vignette starts / reaches full strength; the larger of the two speeds wins |
+| `vignette_ease_ms` | `200` | how long the vignette takes to fade fully in or out |
+| `comfort_smooth_ms` | `150` | the view follows the rail camera's turns through a smoothing filter with this time constant (milliseconds; `0` = off), softening sudden starts and stops of a turn. Position is not smoothed. The lag is capped at half of `cone_deg` (culling only covers the cone); camera cuts (a jump of more than 1 m or 45 degrees in one frame) snap. The gun aims through the same view, so shots still go where the barrel points |
+| `comfort_level` | `1` | keeps the horizon level: `0` = the game's camera as it is, `1` = its roll removed, `2` = roll and up/down tilt removed (only its heading kept; at most `cone_deg/2` of tilt is removed) |
 | `keep_active` | `0` | `1`: the game keeps running when its window loses the focus (try it if the game pauses or stops reacting while you are in the headset) |
 | `dev` | `0` | `1`: the development harness (as with `hovr\probe.ini`): save redirected into `hovr\`, command file, minimized and muted window. Not for playing |
 | `show_<weapon>` | see below | `0` hides that weapon's model (aim and everything else still work) |

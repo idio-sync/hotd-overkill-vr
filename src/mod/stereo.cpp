@@ -37,9 +37,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <mutex>
 #include <unordered_map>
 
+#include "../vr/comfort.h"
 #include "../vr/stereo.h"
 
 namespace hv {
@@ -290,12 +292,16 @@ static bool update_eyes() {
     const float* v = reinterpret_cast<const float*>(va(kViewVa));
     Eyes& e = g_eyes;
     if (e.valid && e.frame == g_frame_no && !memcmp(e.proj_raw, p, 64) && !memcmp(e.view_raw, v, 64)) return true;
+    const bool new_frame = e.frame != g_frame_no;
     memcpy(e.proj_raw, p, 64);
     memcpy(e.view_raw, v, 64);
     e.frame = g_frame_no;
     e.valid = false;
     e.p_game = vr::from_d3dx(p);
     e.view = vr::from_d3dx(v);
+    // The rail comfort filter steps once per stereo frame, with the view of the frame's first
+    // scene draw (the rail camera; later views in the same frame, if any, don't move it).
+    if (new_frame) comfort_rail_frame(e.view);
     vr::Proj pg;
     if (!vr::proj_from_matrix(e.p_game, &pg)) {
         static int warned;
@@ -717,6 +723,42 @@ static void draw_marker(IDirect3DDevice9* dev) {
     if (n) draw_dots(dev, g_eyetex.surf, xy, n, r, hit ? D3DCOLOR_XRGB(255, 40, 40) : D3DCOLOR_XRGB(255, 200, 40));
 }
 
+// The rail comfort vignette (comfort.cpp): each eye's edges darkened by angle from the eye's
+// forward axis (src/vr/comfort.h vignette_alpha), drawn into the eye image after the scene and the
+// gun and before the hand-off; the HUD panel is a separate overlay and stays clear. Rings of
+// vertices from the clear radius out to 80 degrees, opacity interpolated between them.
+static void draw_vignette(IDirect3DDevice9* dev) {
+    const float e = comfort_vignette_now();
+    if (e <= 0.004f || !g_eyetex.surf || !g_eyetex.w) return;
+    constexpr int kSeg = 48, kRings = 10;
+    float ang[kRings];
+    const float inner = vr::vignette_inner_deg(e);
+    for (int k = 0; k < kRings - 1; ++k) ang[k] = inner + vr::kVignetteFalloffDeg * float(k) / float(kRings - 2);
+    ang[kRings - 1] = 80;
+    static float verts[kSeg * (kRings - 1) * 6][3];
+    const float half = float(g_eyetex.w) / 2, h = float(g_eyetex.h);
+    for (int eye = 0; eye < 2; ++eye) {
+        vr::Proj p;
+        if (!stereo_eye_proj(eye, &p)) continue;
+        auto vtx = [&](int ring, int seg, float* out) {
+            const float a = 2 * kPi * float(seg % kSeg) / kSeg, t = std::tan(ang[ring] * kPi / 180);
+            const float nx = p.sx * t * std::cos(a) + p.cx, ny = p.sy * t * std::sin(a) + p.cy;
+            out[0] = eye * half + (nx + 1) * 0.5f * half - .5f;
+            out[1] = (1 - ny) * 0.5f * h - .5f;
+            out[2] = vr::vignette_alpha(e, ang[ring]);
+        };
+        int n = 0;
+        for (int r = 0; r + 1 < kRings; ++r)
+            for (int sgi = 0; sgi < kSeg; ++sgi) {
+                float a0[3], a1[3], b0[3], b1[3];
+                vtx(r, sgi, a0), vtx(r, sgi + 1, a1), vtx(r + 1, sgi, b0), vtx(r + 1, sgi + 1, b1);
+                for (const float* q : {a0, a1, b0, a1, b1, b0}) verts[n][0] = q[0], verts[n][1] = q[1], verts[n][2] = q[2], ++n;
+            }
+        const RECT clip = {LONG(eye * half), 0, LONG((eye + 1) * half), LONG(h)};
+        draw_shade(dev, g_eyetex.surf, verts, n, clip);
+    }
+}
+
 // Time spent in stereo_present per frame (status line), and `vr dbg BITS` switches for bisecting
 // costs: 1 no mirror, 2 no D3D11 copies, 4 no crosshair check, 8 no culling widening, 16 no HUD
 // redirection.
@@ -746,6 +788,7 @@ void stereo_present(IDirect3DDevice9* dev, const FrameRequests& req) {
     const bool stereo = g_frame_stereo && g_hud_drawn;
     const bool flat = !stereo && copy_flat(dev);
     if (stereo) raw_stretch(dev, g_hudrt.surf, nullptr, g_hud.surf, nullptr, D3DTEXF_NONE);
+    if (stereo) draw_vignette(dev);
     if (stereo) draw_marker(dev);
     if (g_vr.mirror && !(g_dbg & 1)) {
         if (stereo) mirror_stereo(dev, g_eyetex.tex, g_hudrt.tex);

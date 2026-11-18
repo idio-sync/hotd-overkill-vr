@@ -111,6 +111,17 @@ The game moves your view in ways that feel bad in a headset, so these are off by
   that would happen whenever you point away from where you look, so it is turned off.
 - **The game's own reload animation**, which would put a second gun in front of your face.
 
+The rail itself can move you fast, so three comfort settings are **on by default** (change them
+in `hovr\hovr.ini`, see Settings):
+
+- **Vignette** (`comfort_vignette`, `0.6`): the edges of the view darken while the rail turns or
+  moves quickly, and clear again when it slows down. `1` makes it stronger, `0` turns it off.
+- **Smoother turns** (`comfort_smooth_ms`, `150`): the view eases into and out of the rail's
+  turns instead of snapping. `0` turns it off. Aiming is unaffected: shots still go where the gun
+  points.
+- **Level horizon** (`comfort_level`, `1`): the rail camera's sideways tilt is removed. `2` also
+  removes its up/down tilt, `0` keeps the game's.
+
 You can look around about 35 degrees either side of the direction the rail is facing. Further
 than that, parts of the level may be missing (the game only draws what it expects you to see).
 
@@ -134,6 +145,9 @@ The most useful ones, in the `[vr]` section:
 | `marker` | `0` | `1` shows a small red dot where your shots will land |
 | `crosshair` | `0` | `1` shows the game's crosshair on the HUD panel |
 | `camera_shake` | `0` | `1` brings back the game's camera shake when you are hit |
+| `comfort_vignette` | `0.6` | Darken the view's edges while the rail moves fast (`0` = off, `1` = strongest) |
+| `comfort_smooth_ms` | `150` | Ease into and out of the rail's turns (`0` = off) |
+| `comfort_level` | `1` | Level horizon: `0` = as the game, `1` = no sideways tilt, `2` = no tilt at all |
 
 Every other setting (panel sizes and distances, button mapping, per-weapon tweaks, the other
 comfort switches) is described in [docs/SETTINGS.md](docs/SETTINGS.md)

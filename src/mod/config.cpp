@@ -59,6 +59,16 @@
 //   recentre_resume = 1              recentre whenever gameplay comes back from a flat screen (pause,
 //                                    death screen/continue, cutscene, next chapter), as at a level start
 //   keep_active = 0                  1: the game keeps running when its window loses the focus
+//
+//   Rail camera comfort (comfort.cpp, src/vr/comfort.h; live: `vr comfort ...`):
+//   comfort_vignette = 0.6           darken the edges of each eye while the rail camera turns or moves
+//                                    fast: strength at full speed (0 = off, 1 = black edges)
+//   vignette_turn_dps = 30,120       turn speed (deg/s) where the vignette starts / is full
+//   vignette_move_mps = 2,6          rail speed (m/s) where it starts / is full
+//   vignette_ease_ms = 200           its fade in/out time
+//   comfort_smooth_ms = 150          the view follows the rail camera's turns through a filter with this
+//                                    time constant (0 = off); lag capped at cone_deg/2, cuts snap
+//   comfort_level = 1                horizon: 0 as the game, 1 roll removed, 2 roll and pitch removed
 //   dev = 0                          1: the development harness (as when hovr\probe.ini exists): save
 //                                    redirected into hovr\, command file, probe.ini window/sound keys
 #include "common.h"
@@ -230,6 +240,17 @@ void load_vr_config() {
     c.head_bob = ini_float(L"head_bob", 0) != 0;
     c.recentre_resume = ini_float(L"recentre_resume", 1) != 0;
     c.keep_active = ini_float(L"keep_active", 0) != 0;
+    c.comfort_vignette = ini_float(L"comfort_vignette", c.comfort_vignette);
+    vr_ini_floats("vignette_turn_dps", c.vignette_turn_dps, 2);
+    vr_ini_floats("vignette_move_mps", c.vignette_move_mps, 2);
+    c.vignette_ease_ms = ini_float(L"vignette_ease_ms", c.vignette_ease_ms);
+    c.comfort_smooth_ms = ini_float(L"comfort_smooth_ms", c.comfort_smooth_ms);
+    c.comfort_level = int(ini_float(L"comfort_level", float(c.comfort_level)));
+    if (c.comfort_vignette < 0) c.comfort_vignette = 0;
+    if (c.comfort_vignette > 1) c.comfort_vignette = 1;
+    if (c.comfort_smooth_ms < 0) c.comfort_smooth_ms = 0;
+    if (c.vignette_ease_ms < 0) c.vignette_ease_ms = 0;
+    if (c.comfort_level < 0 || c.comfort_level > 2) c.comfort_level = 1;
     c.stereo = c.mode != VrMode::off;
     g_vr = c;
     gunmodel_load_config();
@@ -246,6 +267,7 @@ void load_vr_config() {
          int(c.reload_gesture), c.reload_gesture_deg);
     logf("vr: game_arms=%d camera_shake=%d head_bob=%d recentre_resume=%d keep_active=%d", int(c.game_arms), int(c.camera_shake), int(c.head_bob),
          int(c.recentre_resume), int(c.keep_active));
+    comfort_log_settings("settings");
     logf("vr: buttons reload=%s switch=%s grenade=%s pause=%s recentre=%s; game fire=%s reload=%s switch=%s grenade=%s pause=%s",
          c.btn_reload.c_str(), c.btn_switch.c_str(), c.btn_grenade.c_str(), c.btn_pause.c_str(), c.btn_recentre.c_str(), c.game_fire.c_str(),
          c.game_reload.c_str(), c.game_switch.c_str(), c.game_grenade.c_str(), c.game_pause.c_str());
