@@ -97,5 +97,5 @@ Install: README.md, "Install (players)". Uninstall: `install_game.ps1 -Game "<ga
 -Uninstall`, or delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` from the game folder.
 
 [Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/idio-sync/hotd-overkill-vr/releases/tag/v0.1.0
+[0.1.1]: https://github.com/idio-sync/hotd-overkill-vr/compare/c96bde3...v0.1.1
+[0.1.0]: https://github.com/idio-sync/hotd-overkill-vr/tree/c96bde3
