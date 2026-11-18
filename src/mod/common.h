@@ -99,6 +99,8 @@ struct VrConfig {
     bool keep_active = false;    // release: the game keeps running when its window loses focus
 };
 extern VrConfig g_vr;
+// Release install, first start: write the default hovr\hovr.ini if it is missing (config.cpp).
+void write_default_settings();
 void load_vr_config();
 const char* mode_name(VrMode m);
 bool vr_ini_floats(const char* key, float* out, int n);  // [vr] KEY = a,b,c...: true if n numbers were read

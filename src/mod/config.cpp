@@ -1,6 +1,11 @@
 // The mod's settings: hovr\hovr.ini, section [vr] (the probe's harness keeps hovr\probe.ini
 // [probe]). Read once at load; `vr ...` commands in the command file change some of them live.
 //
+// Release install (no probe.ini): when hovr\hovr.ini is missing the mod writes the default
+// settings there first (tools/hovr.default.ini, built in; mode=openvr) and never replaces an
+// existing file (src/vr/settings_file.h). If it cannot be written, the same built-in defaults are
+// used for this run. Development keeps a missing hovr.ini missing (every key at its default below).
+//
 //   [vr]
 //   mode      = off | sim | openvr   off: the game untouched (default). sim: no headset; the desktop
 //                                    window shows both eyes with the HUD panel (gameplay) or the
@@ -60,16 +65,43 @@
 
 #include <cwchar>
 
+#include "../vr/settings_file.h"
+#include "hovr_default_ini.h"
+
 namespace hv {
 
 VrConfig g_vr;
 
 static std::wstring ini_path() { return path_in(L"hovr.ini"); }
 
+// hovr.ini could not be written at the first start: read the built-in default text instead.
+static bool g_builtin_defaults;
+
 static std::wstring ini_str(const wchar_t* key, const wchar_t* def) {
+    if (g_builtin_defaults) {
+        std::string k, v;
+        for (const wchar_t* p = key; *p; ++p) k += char(*p);
+        if (!vr::ini_text_value(vr::kDefaultIni, "vr", k, &v)) return def;
+        return std::wstring(v.begin(), v.end());
+    }
     wchar_t buf[128];
     GetPrivateProfileStringW(L"vr", key, def, buf, 128, ini_path().c_str());
     return buf;
+}
+
+void write_default_settings() {
+    std::string error;
+    switch (vr::write_settings_if_missing(g_dir, L"hovr.ini", vr::kDefaultIni, &error)) {
+        case vr::SettingsWrite::kept: break;
+        case vr::SettingsWrite::written:
+            logf("vr: no hovr\\hovr.ini yet: wrote the default settings there (mode=openvr)");
+            break;
+        case vr::SettingsWrite::failed:
+            logf("vr: could not write the default settings to %ls (%s); using the built-in defaults for this run", ini_path().c_str(),
+                 error.c_str());
+            g_builtin_defaults = true;
+            break;
+    }
 }
 
 static void ini_vec3(const wchar_t* key, float v[3]) {

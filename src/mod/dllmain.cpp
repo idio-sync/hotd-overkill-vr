@@ -27,6 +27,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
             hv::logf("HOTD_NG.exe is not the supported build (Steam 569304); no hooks installed");
             return TRUE;
         }
+        // A release install has no hovr.ini until this first start writes the defaults (mode=openvr);
+        // an existing one is never replaced. Development (probe.ini) keeps its own files as they are.
+        if (!hv::dev_harness()) hv::write_default_settings();
         hv::load_vr_config();
         // Shift held while the game starts: VR off for this run (release: nothing hooked at all).
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;

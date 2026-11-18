@@ -1,6 +1,9 @@
-# Builds the release zip: out\dist\hotd-overkill-vr-<version>.zip with the mod's DLLs, the
-# installer, the default settings, the README, the licence and the third-party notes. No game
-# files: the mod reads the game's own assets at runtime and ships none of them. Next to it:
+# Builds the release zip: out\dist\hotd-overkill-vr-<version>.zip, laid out to be extracted
+# straight into the game folder (next to HOTD_NG.exe): the mod's DLL, Valve's openvr_api.dll, the
+# README, the licence and the third-party notes, all at the top level. No hovr.ini (the mod writes
+# the default settings at its first start, so extracting a newer zip over an old install keeps the
+# player's settings) and no installer script (tools\install_game.ps1 stays a development tool). No
+# game files: the mod reads the game's own assets at runtime and ships none of them. Next to it:
 # hotd-overkill-vr-<version>-pdb.zip (XINPUT1_3.pdb, for crash dumps; not for players) and
 # hotd-overkill-vr-<version>.sha256 (SHA-256 of both zips, sha256sum format).
 #
@@ -35,12 +38,10 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse }
 New-Item -ItemType Directory -Force $stage | Out-Null
 
 $files = [ordered]@{
-    'XINPUT1_3.dll'    = Join-Path $out 'XINPUT1_3.dll'
-    'openvr_api.dll'   = Join-Path $out 'openvr_api.dll'
-    'install_game.ps1' = Join-Path $PSScriptRoot 'install_game.ps1'
-    'hovr.default.ini' = Join-Path $PSScriptRoot 'hovr.default.ini'
-    'README.md'        = Join-Path $root 'README.md'
-    'LICENSE'          = Join-Path $root 'LICENSE'
+    'XINPUT1_3.dll'  = Join-Path $out 'XINPUT1_3.dll'
+    'openvr_api.dll' = Join-Path $out 'openvr_api.dll'
+    'README.md'      = Join-Path $root 'README.md'
+    'LICENSE'        = Join-Path $root 'LICENSE'
 }
 # Ship Valve's openvr_api.dll, never the test runtime (out\fakevr, ProductName 'hovr fakevr').
 $real = Join-Path $root 'third_party\openvr\bin\win32\openvr_api.dll'
@@ -59,13 +60,16 @@ House of the Dead: Overkill VR ($Version)
 A VR mod for the House of the Dead: Overkill mode of The Typing of the Dead: Overkill (Steam app
 246580, build 569304). You need your own copy of the game; this package contains no game files.
 
+Install: extract this zip into the game's folder, next to HOTD_NG.exe (Steam > right-click The
+Typing of the Dead: Overkill > Manage > Browse local files). The first start writes the settings
+to hovr\hovr.ini. Uninstall: delete XINPUT1_3.dll, openvr_api.dll and the hovr folder.
+
 Contents
 - XINPUT1_3.dll     the mod (a stand-in XInput DLL the game loads from its own folder)
 - openvr_api.dll    Valve's OpenVR API (32-bit 2.15.6), used to talk to SteamVR; licence below
-- install_game.ps1  installs into / uninstalls from the game folder (see README.md, "Install")
-- hovr.default.ini  the default settings the installer copies to <game>\hovr\hovr.ini
-- README.md         settings, controls, the headset checklist and known issues
+- README.md         install, settings, controls, the headset checklist and known issues
 - LICENSE           the mod's licence (MIT)
+- LICENSES.txt      this file
 
 Third-party licence: OpenVR SDK (openvr_api.dll)
 -------------------------------------------------

@@ -40,8 +40,15 @@ add_library(hovr SHARED
     src/vr/stereo.cpp
     src/vr/xform.cpp
     src/vr/aim.cpp
-    src/vr/gunpose.cpp)
+    src/vr/gunpose.cpp
+    src/vr/settings_file.cpp)
 set_target_properties(hovr PROPERTIES OUTPUT_NAME XINPUT1_3)
+# The default settings the mod writes to <game>\hovr\hovr.ini at the first start of a release
+# install: tools/hovr.default.ini is the one copy, built into the DLL as kDefaultIni.
+file(READ ${CMAKE_SOURCE_DIR}/tools/hovr.default.ini HOVR_DEFAULT_INI)
+configure_file(src/vr/hovr_default_ini.h.in ${CMAKE_BINARY_DIR}/generated/hovr_default_ini.h @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS tools/hovr.default.ini)
+target_include_directories(hovr PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(hovr PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(hovr PRIVATE /W4 /wd4100 /utf-8)
 target_link_libraries(hovr PRIVATE ole32 windowscodecs uuid dxguid d3d11 dxgi)
@@ -56,7 +63,9 @@ add_custom_command(TARGET hovr POST_BUILD
 
 # Unit tests for the VR math (no game needed): ctest --test-dir out
 enable_testing()
-add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp src/vr/gunpose.cpp)
+add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp src/vr/gunpose.cpp
+    src/vr/settings_file.cpp)
+target_include_directories(hovr_tests PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_compile_options(hovr_tests PRIVATE /W4 /utf-8)
 add_test(NAME stereo COMMAND hovr_tests)
 

@@ -8,9 +8,9 @@ the death screen appear on a large flat virtual screen. Design: `docs/superpower
 
 Status: **milestone 4** (comfort and release): the game's camera shake, hit jolts, head-bob and
 WiiView edge-pan are off in VR, its own first-person reload animation is hidden, the view
-recentres whenever gameplay resumes, and there is an installer for the Steam copy. Milestones 1-4
-have been checked in sim mode (no headset) only; the playtest checklist below covers all of them
-for the first headset session.
+recentres whenever gameplay resumes, and it installs by extracting the release zip into the game
+folder. Milestones 1-4 have been checked in sim mode (no headset) only; the playtest checklist
+below covers all of them for the first headset session.
 
 Licence: MIT, see `LICENSE` (third-party notices, e.g. Valve's OpenVR, in `LICENSES.txt` of the
 release zip). Changes: `CHANGELOG.md`.
@@ -18,19 +18,22 @@ release zip). Changes: `CHANGELOG.md`.
 ## Install (players)
 
 1. Download `hotd-overkill-vr-<version>.zip` from the
-   [Releases](https://github.com/idio-sync/hotd-overkill-vr/releases) page and unzip it.
-2. Find the game's folder: Steam > Library > right-click *The Typing of the Dead: Overkill* >
-   Manage > Browse local files (the folder with `HOTD_NG.exe`). Close the game.
-3. In PowerShell, in the unzipped folder:
-
-   ```
-   powershell -ExecutionPolicy Bypass -File .\install_game.ps1 -Game "<the game folder>"
-   ```
-
-4. Start SteamVR (controllers on) first, then the game from Steam as usual. Hold **Shift** while
+   [Releases](https://github.com/idio-sync/hotd-overkill-vr/releases) page.
+2. Open the game's folder: in Steam, right-click *The Typing of the Dead: Overkill* > Manage >
+   Browse local files. It is the folder with `HOTD_NG.exe`, usually
+   `C:\Program Files (x86)\Steam\steamapps\common\Typing of the Dead Overkill`. Close the game.
+3. Extract the zip into that folder, so `XINPUT1_3.dll` and `openvr_api.dll` sit next to
+   `HOTD_NG.exe`. **If the folder already has an `XINPUT1_3.dll` from another mod, don't
+   overwrite it: the two mods can't both be installed.**
+4. Start SteamVR (controllers on) first, then the game from Steam as usual. The first start writes
+   the settings to `hovr\hovr.ini` in the game folder (VR through SteamVR). Hold **Shift** while
    the game starts to play flat for that run.
 
-Uninstall: the same command with `-Uninstall` (add `-Purge` to remove the settings and log too).
+The mod checks the game's build itself: on any build other than the supported one (Steam build
+569304 of `HOTD_NG.exe`) it does nothing and the game plays as usual. Updating: extract the newer
+zip over the old files; your `hovr\hovr.ini` is kept (the zip has none).
+
+Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder from the game folder.
 Details, settings and controls below; the log is `hovr\hovr.log` in the game folder.
 
 ## How it works (short)
@@ -63,29 +66,31 @@ Details, settings and controls below; the log is `hovr\hovr.log` in the game fol
 
 ## Install: details
 
-You need the release zip (or one from `tools\package.ps1`), unzipped (or, from the repo after
-`build.cmd`, run `tools\install_game.ps1` the same way: it takes the DLLs from `out\`).
+The release zip is laid out for the game folder: `XINPUT1_3.dll` (the mod), `openvr_api.dll`
+(Valve's OpenVR API), this README, `LICENSE` and `LICENSES.txt`, all at the top level.
 
-1. Close the game. Find its folder: Steam > Library > right-click *The Typing of the Dead:
-   Overkill* > Manage > Browse local files (the folder with `HOTD_NG.exe`).
-2. In PowerShell, from the unzipped folder:
+- **Install**: close the game and extract the zip into its folder (Steam > right-click *The Typing
+  of the Dead: Overkill* > Manage > Browse local files; the folder with `HOTD_NG.exe`, by default
+  `C:\Program Files (x86)\Steam\steamapps\common\Typing of the Dead Overkill`). Nothing else in
+  the game folder or your save is changed. If the folder already has an `XINPUT1_3.dll` (another
+  mod), don't overwrite it: only one of the two can be installed.
+- **First start**: the mod checks that `HOTD_NG.exe` is the supported build (on any other build it
+  does nothing at all, a plain XInput pass-through), creates `hovr\` and, when `hovr\hovr.ini` is
+  missing, writes the default settings there (`mode=openvr`, with comments; the same text as
+  `tools\hovr.default.ini`). It never replaces an existing `hovr.ini`; delete it to get the
+  defaults back. If the folder can't be written, the mod uses the same defaults for that run.
+- **Play**: start SteamVR (controllers on), then the game from Steam as usual. Hold **Shift** while
+  the game starts to play flat for that run; `mode=off` in `hovr\hovr.ini` turns VR off for good.
+  The log is `hovr\hovr.log` (send it with any report).
+- **Update**: extract the newer zip over the old files. The zip has no `hovr.ini`, so your settings
+  are kept.
+- **Uninstall**: delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` (settings and log) from the
+  game folder (and the zip's `README.md`, `LICENSE`, `LICENSES.txt` if you like).
 
-   ```
-   powershell -ExecutionPolicy Bypass -File .\install_game.ps1 -Game "<the game folder>"
-   ```
-
-   It checks that `HOTD_NG.exe` is the supported build (and installs nothing if not), refuses to
-   overwrite an `XINPUT1_3.dll` / `openvr_api.dll` that another mod put there, copies the two DLLs,
-   and writes `hovr\hovr.ini` with `mode=openvr` (an existing `hovr.ini` is kept). It does not touch
-   your save.
-3. Play: start SteamVR (controllers on), then the game from Steam as usual. Hold **Shift** while
-   the game starts to play flat for that run; `mode=off` in `hovr\hovr.ini` turns VR off for good.
-   The log is `hovr\hovr.log` (send it with any report).
-
-Uninstall: `install_game.ps1 -Game "<the game folder>" -Uninstall` removes exactly the files it
-installed (checked against the hashes in `hovr\installed.txt`; `XINPUT1_3.dll` also by the mod's
-marker) and keeps `hovr\` (settings and log); add `-Purge` to remove `hovr\` too. Deleting
-`XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` by hand does the same.
+From the repo after `build.cmd`, `tools\install_game.ps1 -Game "<game folder>" [-Uninstall
+[-Purge]]` (a development tool, not in the release zip) copies the DLLs from `out\` the same way,
+checks the build and refuses to overwrite another mod's DLLs first, and keeps a hash record so
+`-Uninstall` removes only what it installed.
 
 **Your save**: the release install plays with the game's own save in
 `%APPDATA%\sega\typing of the dead overkill` (Steam Auto-Cloud keeps syncing it). Nothing in the
@@ -97,9 +102,12 @@ mod writes to it; the game does, as it always does when you play.
   `ninja` on PATH) -> `out\XINPUT1_3.dll` and
   `out\openvr_api.dll` (Valve's), plus the test runtime `out\fakevr\openvr_api.dll` (below; never
   packaged). Unit tests: `build.cmd test` (or `ctest --test-dir out`).
-- `tools\package.ps1 [-NoBuild] [-Version V]` -> `out\dist\hotd-overkill-vr-<version>.zip` (the
-  DLLs, `install_game.ps1`, `hovr.default.ini`, this README, `LICENSE`, `LICENSES.txt`; no game
-  files), plus `-pdb.zip` (the mod's PDB) and `.sha256`.
+- `tools\package.ps1 [-NoBuild] [-Version V]` -> `out\dist\hotd-overkill-vr-<version>.zip` (to
+  extract into the game folder: the two DLLs, this README, `LICENSE`, `LICENSES.txt`, all at the
+  top level; no `hovr.ini`, no installer script, no game files), plus `-pdb.zip` (the mod's PDB)
+  and `.sha256`. The default settings are `tools\hovr.default.ini`, the only copy: CMake builds it
+  into the DLL (`out\generated\hovr_default_ini.h`), which writes it at a release install's first
+  start (`src/vr/settings_file.h`, unit tested).
 - **Development vs release** (`src/vr/harness.h`): a game folder whose `hovr\` holds `probe.ini`
   (or `hovr.ini` `[vr] dev=1`) runs the development harness: every user folder the game asks for
   is redirected into `hovr\AppData` etc. (the real save is never touched; the mod exits if the
@@ -122,8 +130,9 @@ mod writes to it; the game does, as it always does when you play.
 - **CI** (`.github/workflows/build.yml`): every push and pull request to main builds the 32-bit
   RelWithDebInfo DLLs with MSVC x86 and Ninja, runs the unit tests, packages
   `hotd-overkill-vr-ci-<sha>.zip` and its `-pdb.zip`, checks the zip's file list
-  (`tools\check_package.ps1`: exactly the DLLs, installer, default ini, README, `LICENSE`,
-  `LICENSES.txt`; Valve's `openvr_api.dll` by hash, never the fake runtime) and uploads both zips
+  (`tools\check_package.ps1`: exactly the two DLLs, README, `LICENSE`, `LICENSES.txt` at the top
+  level; Valve's `openvr_api.dll` by hash, never the fake runtime; the default settings built into
+  the mod's DLL) and uploads both zips
   as artifacts. The file list is also a notice on the run's summary page.
 - **Before tagging**, on this machine (CI has no game): `powershell -ExecutionPolicy Bypass -File
   tools\release_check.ps1`. It builds, runs the unit tests and the package check, then plays the
@@ -192,7 +201,7 @@ first calls to `hovr\fakevr.log`.
 
 | key | default | meaning |
 |---|---|---|
-| `mode` | `off` | `off` = the game untouched; `sim` = no headset, the desktop window shows what the headset would; `openvr` = SteamVR. Holding **Shift** while the game starts, or SteamVR failing to start, means `off` for that run. |
+| `mode` | `off` (the `hovr.ini` written at the first start: `openvr`) | `off` = the game untouched; `sim` = no headset, the desktop window shows what the headset would; `openvr` = SteamVR. Holding **Shift** while the game starts, or SteamVR failing to start, means `off` for that run. |
 | `eye_res` | `auto` | per-eye render size: `auto` (openvr: SteamVR's recommended size × `eye_scale`; sim: 1280x720) or `WxH` |
 | `eye_scale` | `1.0` | multiplier on the recommended size (lower it if the frame rate can't keep up) |
 | `unit_m` | `0.01` | metres per game unit (world scale; the game works in centimetres) |
@@ -291,7 +300,7 @@ screenshot). The full list is at the top of `src/mod/control.cpp`. VR ones:
 One session covers everything. Have the desktop window in view or a second person at the keyboard;
 take notes of the setting values that feel right.
 
-**Before**: install into the Steam copy (above), or use the test copy with `tools\run.ps1 -Mode
+**Before**: install into the Steam copy (above: extract the zip), or use the test copy with `tools\run.ps1 -Mode
 openvr -OpenVR real -Normal` (`minimized=0`, `mute=0` in its `probe.ini`). Start SteamVR with both controllers
 on, then the game. If anything goes wrong, close the game and start it again holding **Shift**
 (flat, no hooks), and keep `hovr\hovr.log` (`hovr\probe.log` in the test copy).
@@ -372,7 +381,8 @@ recentre on resume) feel right.
   gameplay recentres to where you look when it resumes.
 - Release mode was checked by code review, a unit test of the decision (`test_harness_plan`) and
   the development log's dry-run line - not by a release run in the test copy, because that would
-  play with the real save.
+  play with the real save. The same goes for the first start writing `hovr\hovr.ini`: unit tested
+  (`test_default_settings_written_only_when_missing`) and reviewed, not run in the game.
 - Window focus: in release the game's window is left alone. If the game pauses or ignores the
   controllers while the desktop window is not in front, set `keep_active=1`.
 - With the game's reload animation hidden (`game_arms=0`) the only reload cue in your hand is the
@@ -385,4 +395,4 @@ recentre on resume) feel right.
 - Looking more than `cone_deg` away from the rail camera's direction can show objects culled by the
   game.
 - Only Steam build 569304 of `HOTD_NG.exe` is supported; any other build leaves the mod a plain
-  XInput pass-through (the installer refuses it).
+  XInput pass-through (the mod checks this itself at every start).

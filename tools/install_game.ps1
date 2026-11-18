@@ -1,6 +1,8 @@
 # Installs House of the Dead: Overkill VR into The Typing of the Dead: Overkill (Steam), or removes it.
+# A development and test tool, not in the release zip: players extract the zip into the game folder
+# (README, "Install") and the mod writes hovr\hovr.ini itself at its first start.
 #
-#   powershell -ExecutionPolicy Bypass -File install_game.ps1 -Game "C:\Program Files (x86)\Steam\steamapps\common\The Typing of the Dead Overkill"
+#   powershell -ExecutionPolicy Bypass -File install_game.ps1 -Game "C:\Program Files (x86)\Steam\steamapps\common\Typing of the Dead Overkill"
 #   powershell -ExecutionPolicy Bypass -File install_game.ps1 -Game "<same folder>" -Uninstall [-Purge]
 #
 # Adds to the game folder: XINPUT1_3.dll (the mod), openvr_api.dll (SteamVR's API) and hovr\

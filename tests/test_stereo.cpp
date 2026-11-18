@@ -1,13 +1,19 @@
 // Unit tests for src/vr/stereo (no game, no D3D). Run: ctest --test-dir out
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <iterator>
+#include <string>
 
 #include "../src/vr/stereo.h"
 #include "../src/vr/aim.h"
 #include "../src/vr/gunpose.h"
 #include "../src/vr/xform.h"
 #include "../src/vr/harness.h"
+#include "../src/vr/settings_file.h"
+#include "hovr_default_ini.h"
 
 using namespace hv::vr;
 
@@ -607,8 +613,78 @@ static void test_harness_plan() {
         }
 }
 
+static std::string read_file(const std::filesystem::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+// Release install, first start: hovr\hovr.ini is written only when it is missing (src/vr/settings_file.h).
+static void test_default_settings_written_only_when_missing() {
+    namespace fs = std::filesystem;
+    const fs::path root =
+        fs::temp_directory_path() / ("hovr_settings_test_" + std::to_string(fs::file_time_type::clock::now().time_since_epoch().count()));
+    const fs::path game = root / "game";
+    const fs::path hovr = game / "hovr";  // missing, as in a fresh install: created by the write
+    std::string error;
+    fs::create_directories(game);
+
+    // The built-in text is tools/hovr.default.ini: mode=openvr in [vr], with its comments.
+    std::string v;
+    CHECK(ini_text_value(kDefaultIni, "vr", "mode", &v) && v == "openvr");
+    CHECK(ini_text_value(kDefaultIni, "VR", "Eye_Scale", &v) && v == "1.0");
+    CHECK(ini_text_value(kDefaultIni, "vr", "hand", &v) && v == "right");
+    CHECK(!ini_text_value(kDefaultIni, "vr", "dev", &v));     // never the development harness
+    CHECK(!ini_text_value(kDefaultIni, "probe", "mode", &v));
+    CHECK(std::string(kDefaultIni).find("; ") != std::string::npos);
+
+    // Missing: the folder and the file are created; CRLF line ends, otherwise the text as is.
+    CHECK(write_settings_if_missing(hovr.wstring(), L"hovr.ini", kDefaultIni, &error) == SettingsWrite::written);
+    std::string crlf;
+    for (const char* c = kDefaultIni; *c; ++c) {
+        if (*c == '\n') crlf += '\r';
+        crlf += *c;
+    }
+    CHECK(read_file(hovr / "hovr.ini") == crlf);
+
+    // Present (the player's own settings): never replaced, never touched.
+    const std::string mine = "[vr]\r\nmode=off\r\nhand=left\r\n";
+    {
+        std::ofstream(hovr / "hovr.ini", std::ios::binary | std::ios::trunc) << mine;
+    }
+    CHECK(write_settings_if_missing(hovr.wstring(), L"hovr.ini", kDefaultIni, &error) == SettingsWrite::kept);
+    CHECK(read_file(hovr / "hovr.ini") == mine);
+    // An empty file is still the player's file.
+    {
+        std::ofstream(hovr / "hovr.ini", std::ios::binary | std::ios::trunc);
+    }
+    CHECK(write_settings_if_missing(hovr.wstring(), L"hovr.ini", kDefaultIni, &error) == SettingsWrite::kept);
+    CHECK(fs::file_size(hovr / "hovr.ini") == 0);
+
+    // Cannot be written (hovr is a file, not a folder): failed with a reason, nothing created.
+    const fs::path blocked = root / "blocked";
+    fs::create_directories(blocked);
+    {
+        std::ofstream(blocked / "hovr", std::ios::binary) << "x";
+    }
+    error.clear();
+    CHECK(write_settings_if_missing((blocked / "hovr").wstring(), L"hovr.ini", kDefaultIni, &error) == SettingsWrite::failed);
+    CHECK(!error.empty());
+    CHECK(read_file(blocked / "hovr") == "x");
+
+    // The parser: comments, other sections, spaces around '=' and the value.
+    const char* text = "; mode=sim\n[probe]\nmode=sim\n[vr]\r\n  # x=1\r\n Mode = off \r\nsim_hand = 1, 2, 3\n[other]\nhand=left\n";
+    CHECK(ini_text_value(text, "vr", "mode", &v) && v == "off");
+    CHECK(ini_text_value(text, "vr", "sim_hand", &v) && v == "1, 2, 3");
+    CHECK(!ini_text_value(text, "vr", "hand", &v));
+    CHECK(!ini_text_value(text, "vr", "x", &v));
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 int main() {
     test_harness_plan();
+    test_default_settings_written_only_when_missing();
     test_model_to_gun();
     test_gun_in_hand_holds_grip_and_barrel();
     test_drawn_barrel_is_the_shot_ray();
@@ -636,6 +712,6 @@ int main() {
         std::printf("%d failure(s)\n", g_failures);
         return 1;
     }
-    std::printf("all stereo, xform and aim tests passed\n");
+    std::printf("all stereo, xform, aim, harness and settings-file tests passed\n");
     return 0;
 }

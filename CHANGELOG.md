@@ -6,7 +6,33 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-17
+
+Installs by copying files: extract the zip into the game folder. Otherwise the same mod as 0.1.0;
+still **not yet played in a real headset**.
+
+### Changed
+
+- **Drag-and-drop install**: the zip is laid out for the game folder (`XINPUT1_3.dll`,
+  `openvr_api.dll`, `README.md`, `LICENSE`, `LICENSES.txt` at the top level). In Steam,
+  right-click *The Typing of the Dead: Overkill* > Manage > Browse local files and extract the zip
+  there, next to `HOTD_NG.exe`. Don't overwrite an `XINPUT1_3.dll` that another mod put there.
+  Uninstall: delete `XINPUT1_3.dll`, `openvr_api.dll` and the `hovr` folder.
+- **Default settings written on first run**: when `hovr\hovr.ini` is missing, the mod writes the
+  default settings there at its first start (`mode=openvr`, with comments) and never replaces an
+  existing file, so extracting a newer zip over an old install keeps your settings (the zip has no
+  `hovr.ini`). The mod still checks the game build itself and does nothing on other builds.
+- **The installer script is no longer shipped**: `install_game.ps1` and `hovr.default.ini` are not
+  in the zip (the script stays in the repository as a development tool).
+
+### Fixed
+
+- Wrong folder name in the docs: the Steam folder is
+  `...\steamapps\common\Typing of the Dead Overkill` (no "The").
+
 ## [0.1.0] - 2026-11-17
+
+Withdrawn: superseded by 0.1.1, which installs by copying files.
 
 The first release: milestones 1-4 of the design. **Not yet played in a real headset**: everything
 below was checked without one, in the mod's no-headset mode (`sim`) and against a fake SteamVR
@@ -70,5 +96,6 @@ installer checks it), SteamVR and a headset with tracked controllers.
 Install: README.md, "Install (players)". Uninstall: `install_game.ps1 -Game "<game folder>"
 -Uninstall`, or delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` from the game folder.
 
-[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/idio-sync/hotd-overkill-vr/releases/tag/v0.1.0
