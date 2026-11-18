@@ -48,9 +48,14 @@ struct WidenFrustum {
         saved[0] = gf(kSinX), saved[1] = gf(kCosX), saved[2] = gf(kSinY), saved[3] = gf(kCosY);
         gf(kSinX) = std::sin(wx), gf(kCosX) = std::cos(wx), gf(kSinY) = std::sin(wy), gf(kCosY) = std::cos(wy);
         on = true;
-        if (g_widened_calls++ == 0)
-            logf("culling widened: half-FOV %.1f x %.1f -> %.1f x %.1f deg", hx * 180 / kPi, hy * 180 / kPi, wx * 180 / kPi,
-                 wy * 180 / kPi);
+        // Logged at the first call and whenever the result changes (eye FOV, cone_deg, the game's FOV).
+        static float logged[2];
+        ++g_widened_calls;
+        if (std::fabs(wx - logged[0]) + std::fabs(wy - logged[1]) > 0.002f) {
+            logged[0] = wx, logged[1] = wy;
+            logf("culling widened: half-FOV %.1f x %.1f -> %.1f x %.1f deg (eyes %.1f x %.1f, cone %.0f)", hx * 180 / kPi, hy * 180 / kPi,
+                 wx * 180 / kPi, wy * 180 / kPi, eye_hx * 180 / kPi, eye_hy * 180 / kPi, g_vr.cone_deg);
+        }
     }
     ~WidenFrustum() {
         if (on) gf(kSinX) = saved[0], gf(kCosX) = saved[1], gf(kSinY) = saved[2], gf(kCosY) = saved[3];

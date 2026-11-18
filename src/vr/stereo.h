@@ -64,4 +64,12 @@ bool correction(const Mat4& p_game, const Proj& p_eye, const Mat4& e_view, Mat4*
 // turns up to `cone` radians; plus `margin`, clamped below 90 degrees.
 float widened_half_angle(float eye_half, float cone, float margin);
 
+// The real size of a screen-sized render target created double-wide for stereo. The scene's
+// 1280x720 family (scene, depth, bloom/blur chain) scales with the eye size relative to 1280x720,
+// so the scene target holds exactly two eye_w x eye_h eyes. The composite target (the window's
+// size or a 16:10 one, e.g. 1680x1050) holds exactly two eyes too: the game's composite draw
+// stretches the scene over it, so any other size only resamples the eyes (non-square pixels, more
+// pixels to post-process, copy and submit than the headset asked for).
+void stereo_target_real_size(bool composite, unsigned w, unsigned h, int eye_w, int eye_h, unsigned* out_w, unsigned* out_h);
+
 }  // namespace hv::vr

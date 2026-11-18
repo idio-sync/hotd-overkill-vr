@@ -177,6 +177,21 @@ static void test_widened_half_angle() {
     CHECK_NEAR(widened_half_angle(50 * d, 35 * d, 10 * d), 89 * d, 1e-6);  // clamped below 90
 }
 
+static void test_stereo_target_real_size() {
+    unsigned w, h;
+    // The scene family: two eyes side by side at eye resolution (Steam Frame-like 2064x2016).
+    stereo_target_real_size(false, 1280, 720, 2064, 2016, &w, &h);
+    CHECK(w == 4128 && h == 2016);
+    stereo_target_real_size(false, 640, 360, 2064, 2016, &w, &h);
+    CHECK(w == 2064 && h == 1008);
+    // The composite target holds exactly two eyes whatever its game size: 1680x1050 (16:10 at a
+    // 1920x1200 back buffer) used to become 5418x2940 (2709x2940 per eye for a 2064x2016 eye).
+    stereo_target_real_size(true, 1680, 1050, 2064, 2016, &w, &h);
+    CHECK(w == 4128 && h == 2016);
+    stereo_target_real_size(true, 1291, 807, 1280, 720, &w, &h);
+    CHECK(w == 2560 && h == 720);
+}
+
 static void test_rigid_inverse() {
     Mat4 a = mul(translation(1, 2, 3), rotation_yaw_pitch(0.7f, -0.3f));
     CHECK(max_abs_diff(mul(a, rigid_inverse(a)), identity()) < 1e-5f);
@@ -610,6 +625,7 @@ int main() {
     test_widened_game_projection_is_undone();
     test_tangents_round_trip();
     test_widened_half_angle();
+    test_stereo_target_real_size();
     test_rigid_inverse();
     test_rh_yaw_pitch_forward();
     test_hand_adjust();

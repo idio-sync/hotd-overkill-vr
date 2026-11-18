@@ -1,8 +1,9 @@
 // Same-frame stereo by per-draw duplication (design: "Rendering").
 //
-// Screen-sized render targets are created double-wide at eye resolution (width x 2*eye_w/1280,
-// height x eye_h/720): the 1280x720 scene target and its depth, the bloom/blur chain (640x180,
-// 320x180, 160x90, 640x360) and the composite target with its depth. The composite target's size
+// Screen-sized render targets are created double-wide at eye resolution: the 1280x720 scene
+// target and its depth and the bloom/blur chain (640x180, 320x180, 160x90, 640x360) at width x
+// 2*eye_w/1280, height x eye_h/720; the composite target with its depth at exactly 2*eye_w x eye_h
+// (src/vr/stereo.h stereo_target_real_size). The composite target's size
 // follows the window (1291x807 for a 1536x807 back buffer): it is the colour/depth target whose
 // height is the back buffer's and whose width is smaller (and wider than tall). Shadow maps and
 // other targets keep their size. The game keeps thinking in its own sizes: viewports, scissor
@@ -131,9 +132,9 @@ static Kind kind_of(UINT w, UINT h, bool depth) {
 }
 
 bool stereo_target_size(UINT w, UINT h, bool depth, UINT* out_w, UINT* out_h) {
-    if (g_vr.mode == VrMode::off || kind_of(w, h, depth) == kOther) return false;
-    *out_w = UINT(std::lround(double(w) * 2.0 * g_vr.eye_w / 1280.0));
-    *out_h = UINT(std::lround(double(h) * g_vr.eye_h / 720.0));
+    const Kind k = g_vr.mode == VrMode::off ? kOther : kind_of(w, h, depth);
+    if (k == kOther) return false;
+    vr::stereo_target_real_size(k == kComposite, w, h, g_vr.eye_w, g_vr.eye_h, out_w, out_h);
     return true;
 }
 
@@ -323,7 +324,20 @@ bool stereo_eye_proj(int eye, vr::Proj* out) {
 }
 
 void stereo_eye_half_angles(float game_hx, float game_hy, float* hx, float* hy) {
-    if (!g_eyes.valid) {  // before the first stereo frame: the sim eye (the game's vertical FOV)
+    if (!g_eyes.valid) {  // before the first stereo frame: the headset's tangents (openvr), else the sim eye
+        float mx = 0, my = 0;
+        for (int eye = 0; eye < 2; ++eye) {
+            vr::Mat4 pose;
+            float t[4];
+            if (!vrsys_eye(eye, &pose, t)) break;
+            mx = std::fmax(mx, std::fmax(-t[0], t[1]));
+            my = std::fmax(my, std::fmax(-t[2], t[3]));
+        }
+        if (mx > 0 && my > 0) {
+            *hx = std::atan(mx);
+            *hy = std::atan(my);
+            return;
+        }
         *hy = game_hy;
         *hx = std::fmax(game_hx, std::atan(std::tan(game_hy) * float(g_vr.eye_w) / float(g_vr.eye_h)));
         return;

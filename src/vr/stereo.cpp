@@ -152,6 +152,16 @@ bool correction(const Mat4& p_game, const Proj& p_eye, const Mat4& e_view, Mat4*
     return true;
 }
 
+void stereo_target_real_size(bool composite, unsigned w, unsigned h, int eye_w, int eye_h, unsigned* out_w, unsigned* out_h) {
+    if (composite) {
+        *out_w = 2u * unsigned(eye_w);
+        *out_h = unsigned(eye_h);
+        return;
+    }
+    *out_w = unsigned(std::lround(double(w) * 2.0 * eye_w / 1280.0));
+    *out_h = unsigned(std::lround(double(h) * eye_h / 720.0));
+}
+
 float widened_half_angle(float eye_half, float cone, float margin) {
     const float limit = 89.0f * 3.14159265f / 180.0f;
     const float h = eye_half + cone + margin;
