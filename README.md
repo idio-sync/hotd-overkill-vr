@@ -12,6 +12,27 @@ recentres whenever gameplay resumes, and there is an installer for the Steam cop
 have been checked in sim mode (no headset) only; the playtest checklist below covers all of them
 for the first headset session.
 
+Licence: MIT, see `LICENSE` (third-party notices, e.g. Valve's OpenVR, in `LICENSES.txt` of the
+release zip). Changes: `CHANGELOG.md`.
+
+## Install (players)
+
+1. Download `hotd-overkill-vr-<version>.zip` from the
+   [Releases](https://github.com/idio-sync/hotd-overkill-vr/releases) page and unzip it.
+2. Find the game's folder: Steam > Library > right-click *The Typing of the Dead: Overkill* >
+   Manage > Browse local files (the folder with `HOTD_NG.exe`). Close the game.
+3. In PowerShell, in the unzipped folder:
+
+   ```
+   powershell -ExecutionPolicy Bypass -File .\install_game.ps1 -Game "<the game folder>"
+   ```
+
+4. Start SteamVR (controllers on) first, then the game from Steam as usual. Hold **Shift** while
+   the game starts to play flat for that run.
+
+Uninstall: the same command with `-Uninstall` (add `-Purge` to remove the settings and log too).
+Details, settings and controls below; the log is `hovr\hovr.log` in the game folder.
+
 ## How it works (short)
 
 - `XINPUT1_3.dll` is a stand-in XInput DLL the game loads from its own folder. It forwards XInput
@@ -40,10 +61,10 @@ for the first headset session.
   flat screen can be shared with a Direct3D 11 device that submits them to SteamVR (eyes) and
   shows them as SteamVR overlays (HUD panel, flat screen).
 
-## Install (your Steam copy)
+## Install: details
 
-You need the zip from `tools\package.ps1`, unzipped (or, from the repo after `build.cmd`, run
-`tools\install_game.ps1` the same way: it takes the DLLs from `out\`).
+You need the release zip (or one from `tools\package.ps1`), unzipped (or, from the repo after
+`build.cmd`, run `tools\install_game.ps1` the same way: it takes the DLLs from `out\`).
 
 1. Close the game. Find its folder: Steam > Library > right-click *The Typing of the Dead:
    Overkill* > Manage > Browse local files (the folder with `HOTD_NG.exe`).
@@ -72,11 +93,13 @@ mod writes to it; the game does, as it always does when you play.
 
 ## Build, package, development
 
-- `build.cmd` (MSVC Build Tools x86, CMake, `C:\ninja.exe`) -> `out\XINPUT1_3.dll` and
+- `build.cmd` (MSVC x86 found through vswhere, CMake, Ninja: `C:\ninja.exe` if present, else
+  `ninja` on PATH) -> `out\XINPUT1_3.dll` and
   `out\openvr_api.dll` (Valve's), plus the test runtime `out\fakevr\openvr_api.dll` (below; never
-  packaged). Unit tests: `ctest --test-dir out` inside a vcvars32 shell.
+  packaged). Unit tests: `build.cmd test` (or `ctest --test-dir out`).
 - `tools\package.ps1 [-NoBuild] [-Version V]` -> `out\dist\hotd-overkill-vr-<version>.zip` (the
-  DLLs, `install_game.ps1`, `hovr.default.ini`, this README, `LICENSES.txt`; no game files).
+  DLLs, `install_game.ps1`, `hovr.default.ini`, this README, `LICENSE`, `LICENSES.txt`; no game
+  files), plus `-pdb.zip` (the mod's PDB) and `.sha256`.
 - **Development vs release** (`src/vr/harness.h`): a game folder whose `hovr\` holds `probe.ini`
   (or `hovr.ini` `[vr] dev=1`) runs the development harness: every user folder the game asks for
   is redirected into `hovr\AppData` etc. (the real save is never touched; the mod exits if the
@@ -93,6 +116,29 @@ mod writes to it; the game does, as it always does when you play.
   start with Valve's DLL unless `-OpenVR real` is in the same call, so a test can never start
   SteamVR. For a headset session in the test copy: `tools\run.ps1 -Mode openvr -OpenVR real
   -Normal` (and `mute=0` in `hovr\probe.ini`); the save redirect stays on there.
+
+## Releases (maintainers)
+
+- **CI** (`.github/workflows/build.yml`): every push and pull request to main builds the 32-bit
+  RelWithDebInfo DLLs with MSVC x86 and Ninja, runs the unit tests, packages
+  `hotd-overkill-vr-ci-<sha>.zip` and its `-pdb.zip`, checks the zip's file list
+  (`tools\check_package.ps1`: exactly the DLLs, installer, default ini, README, `LICENSE`,
+  `LICENSES.txt`; Valve's `openvr_api.dll` by hash, never the fake runtime) and uploads both zips
+  as artifacts. The file list is also a notice on the run's summary page.
+- **Before tagging**, on this machine (CI has no game): `powershell -ExecutionPolicy Bypass -File
+  tools\release_check.ps1`. It builds, runs the unit tests and the package check, then plays the
+  test copy (`C:\Users\Virtual\hotd-vr-game`) with the fake SteamVR runtime: start-up, menus by
+  pointing to gameplay, a stereo capture, the hit marker against the controller ray
+  (`tools\fakevr_check.py`), buttons, recentre and quit. It writes the pass/fail summary to
+  `out\release_check.txt`, stops the game it started (by PID) and puts the test copy back to
+  `mode=sim` with Valve's `openvr_api.dll` (checked by hash). `-SkipBuild` reuses `out\`.
+- **Tag**: move the `## [Unreleased]` notes in `CHANGELOG.md` into a `## [X.Y.Z] - YYYY-MM-DD`
+  section, commit, push, wait for CI to pass, then `git tag -a vX.Y.Z -m "vX.Y.Z"` and
+  `git push origin vX.Y.Z`. The release workflow (`.github/workflows/release.yml`) builds and
+  tests the tag again, packages `hotd-overkill-vr-X.Y.Z.zip`, `-pdb.zip` and `.sha256`, and
+  creates the GitHub Release with that CHANGELOG section as its notes (it fails if the section is
+  missing or undated). Versions 0.x and versions with a `-` suffix (`v0.2.0-rc1`) are marked
+  pre-release. Tags are never moved or reused: a broken release gets a new patch version.
 
 ## Fake SteamVR runtime (tests without a headset)
 

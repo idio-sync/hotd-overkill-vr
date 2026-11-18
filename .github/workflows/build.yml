@@ -1,0 +1,56 @@
+# Every push and pull request to main: the 32-bit release build (RelWithDebInfo), the unit tests,
+# and the players' zip as it would be released (plus the mod's PDB) as artifacts. The game is not
+# here, so in-game checks are tools\release_check.ps1's job before a tag (README, "Releases").
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: MSVC x86 developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x86
+
+      - name: Build (RelWithDebInfo, 32-bit)
+        shell: cmd
+        run: build.cmd
+
+      - name: Unit tests
+        run: ctest --test-dir out --output-on-failure
+
+      - name: Package
+        id: package
+        shell: powershell
+        run: |
+          $version = 'ci-' + '${{ github.event.pull_request.head.sha || github.sha }}'.Substring(0, 7)
+          .\tools\package.ps1 -NoBuild -Version $version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\tools\check_package.ps1 "out\dist\hotd-overkill-vr-$version.zip" -Annotate
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "name=hotd-overkill-vr-$version" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: out/dist/${{ steps.package.outputs.name }}.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload the PDB zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: out/dist/${{ steps.package.outputs.name }}-pdb.zip
+          archive: false
+          if-no-files-found: error
