@@ -89,13 +89,58 @@ head before culling), the typing modes, co-op, OpenXR, other game builds.
   (`out\generated\hovr_default_ini.h`), which writes it at a release install's first start
   (`src/vr/settings_file.h`, unit tested).
 
+## The exe check and its anchor table
+
+The mod patches and reads fixed addresses of Steam build 569304, so at every start, before any
+hook, `src/mod/buildcheck.cpp` reads `HOTD_NG.exe` from disk and `src/vr/exe_anchors.cpp` judges it:
+
+- the whole file is that build (size + FNV-1a 64): **known build**;
+- the file differs but every **anchor** is byte-for-byte as in that build: **a patched copy,
+  compatible**. VR is on, and a warning line names the regions that differ (`PE headers`, a
+  section such as `.text (0x401000)`, `signature/overlay`), from per-region hashes of the known exe;
+- any anchor differs, or the exe isn't a PE with image base 0x400000: **refused**. A release
+  install stays a plain XInput pass-through (development keeps only the harness's own import
+  hooks, so a test run never touches the real save: `src/vr/harness.h`), and the log has one line
+  per failing anchor: name, kind, VA, expected bytes, found bytes.
+
+The log always has the exe's size, FNV-1a 64, SHA-256, PE timestamp and Large Address Aware flag.
+There is no setting to force VR on.
+
+An anchor is a place in the exe the mod depends on, compared in the file. The file's bytes are
+not relocated, so absolute addresses in instructions are the image-base 0x400000 ones; nothing
+SecuROM fills or rewrites at runtime (such as its jump table at 0xA71000..0xA71844) is used.
+
+- `detour`: the prologue of each function the mod detours (the same bytes the detour itself
+  checks at install time, which stays as a second check);
+- `call`: the first instructions of each game function the mod calls;
+- `retaddr`: the call in the weapon's fire whose return address (0x52B164) the mod compares;
+- `global`: for each fixed global the mod reads or writes (0x9F09E0, 0x99B708, 0x99B8F4,
+  0x99B770, 0x99B71C, 0x9C7DC0, 0x9C7E48, 0x9C7E88, 0x9C7F20..0x9C7F34; 0x9B01A8 is inside the
+  shake detour's prologue), an instruction in the game's code that references it (in a function
+  the mod hooks where possible, and with the field offset the mod uses), so a moved global fails;
+- `vtable`: the constructor's store of each vtable the mod compares objects with, and the
+  vtable's own first bytes.
+
+The list is `SPEC` in `tools/anchors.py`; the table, `src/vr/exe_anchors_table.h`, is generated
+from the known exe and is not edited by hand. When the mod starts using another address: add it
+to `SPEC` (`tools\anchors.py --find VA` lists the instructions that reference a global), run
+`.venv\Scripts\python.exe tools\anchors.py --write` (it refuses any exe but the known one; the
+default is the test copy's, or `--exe PATH`), rebuild and `build.cmd test`. The `anchors` test
+checks the table's consistency (unique names, lengths, no overlaps, each global referenced, nothing
+in SecuROM's table) and the check itself on a synthetic exe; where the real exe exists
+(`HOTD_EXE`, else the test copy) also the table against it, a 4 GB patch, a changed padding byte
+and every anchor changed in turn. CI has no game, so that part is skipped there.
+
+`tools\anchors.py --check EXE` (standard library only) gives the same verdict for any exe, e.g.
+one a user sends; `tools\install_game.ps1` uses it when the exe isn't the exact known file.
+
 ## Installing: details
 
 The release zip is laid out for the game folder: `XINPUT1_3.dll` (the mod), `openvr_api.dll`
 (Valve's OpenVR API), `README.md`, `LICENSE` and `LICENSES.txt`, all at the top level.
 
-- **First start**: the mod checks that `HOTD_NG.exe` is the supported build (on any other build it
-  does nothing at all, a plain XInput pass-through), creates `hovr\` and, when `hovr\hovr.ini` is
+- **First start**: the mod checks that `HOTD_NG.exe` is the supported build or a compatible
+  patched copy of it (otherwise it does nothing at all, a plain XInput pass-through), creates `hovr\` and, when `hovr\hovr.ini` is
   missing, writes the default settings there (`mode=openvr`, with comments; the same text as
   `tools\hovr.default.ini`). It never replaces an existing `hovr.ini`. If the folder can't be
   written, the mod uses the same defaults for that run.
@@ -371,5 +416,8 @@ recentre on resume) feel right.
   it sits on the barrel line, also with a 15-degree smoothing lag held (`smooth 5000`, 2026-11-18).
   Naked Terror's rail turns at up to ~575 deg/s (100 ms average), ~1000 deg/s in a single frame;
   no camera cuts were seen there.
-- Only Steam build 569304 of `HOTD_NG.exe` is supported; any other build leaves the mod a plain
-  XInput pass-through (the mod checks this itself at every start).
+- Only Steam build 569304 of `HOTD_NG.exe` is supported, and copies of it changed elsewhere than
+  the anchors; anything else leaves the mod a plain XInput pass-through (the mod checks this itself
+  at every start: "The exe check and its anchor table"). Patched copies were tested in sim with a
+  4 GB patch and a changed int3 padding byte (2026-11-18); other patchers' real changes are
+  untested.

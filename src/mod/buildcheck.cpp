@@ -1,21 +1,21 @@
 // The mod patches addresses of one build of HOTD_NG.exe (Steam build 569304, RC14). Before any
-// hook goes in, the exe on disk is compared with that build (size + FNV-1a 64 of the file); on a
-// mismatch the DLL stays a plain XInput pass-through.
+// hook goes in, the exe on disk is checked (src/vr/exe_anchors.h): the known build, or a copy
+// changed by another patcher that left every place the mod uses (the anchors) alone, gets the
+// mod; anything else leaves the DLL a plain XInput pass-through, and the log names each anchor
+// that differs (expected and found bytes).
 //
-// The log line always carries the exe's SHA-256, PE timestamp and Large Address Aware flag, so a
+// The log always carries the exe's size, SHA-256, PE timestamp and Large Address Aware flag, so a
 // user's report tells a different build (other timestamp) from a patched copy of ours (same
 // timestamp, other bytes) without asking for more files.
 #include "common.h"
 
 #include <bcrypt.h>
 
+#include "../vr/exe_anchors.h"
+
 #pragma comment(lib, "bcrypt.lib")
 
 namespace hv {
-
-constexpr uint64_t kExeSize = 6345784;
-constexpr uint64_t kExeFnv64 = 0x6fdfd5e751e4b7e8ull;  // also SHA-256 f9db505a...0275bb03
-constexpr uint32_t kExeTimestamp = 0x54DE0845;         // PE TimeDateStamp: 2015-02-13 09:20:53 UTC
 
 static std::string sha256_hex(const std::vector<uint8_t>& data) {
     BCRYPT_ALG_HANDLE alg = nullptr;
@@ -38,17 +38,13 @@ static std::string sha256_hex(const std::vector<uint8_t>& data) {
     return out.empty() ? "unavailable" : out;
 }
 
-// PE TimeDateStamp and FILE_HEADER.Characteristics of an image in memory; false if not a PE.
-static bool pe_header(const std::vector<uint8_t>& d, uint32_t* timestamp, uint16_t* characteristics) {
-    if (d.size() < 0x40) return false;
-    uint32_t pe = *reinterpret_cast<const uint32_t*>(&d[0x3C]);
-    if (size_t(pe) + 24 > d.size() || memcmp(&d[pe], "PE\0\0", 4) != 0) return false;
-    *timestamp = *reinterpret_cast<const uint32_t*>(&d[pe + 8]);
-    *characteristics = *reinterpret_cast<const uint16_t*>(&d[pe + 22]);
-    return true;
+static std::string join(const std::vector<std::string>& v) {
+    std::string s;
+    for (const std::string& x : v) s += (s.empty() ? "" : ", ") + x;
+    return s.empty() ? "nothing" : s;
 }
 
-bool exe_is_known_build() {
+bool exe_is_supported() {
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
@@ -72,24 +68,38 @@ bool exe_is_known_build() {
         return false;
     }
 
-    uint64_t h = fnv64(data.data(), data.size());
-    bool ok = uint64_t(size.QuadPart) == kExeSize && h == kExeFnv64;
-    uint32_t stamp = 0;
-    uint16_t chars = 0;
-    bool pe = pe_header(data, &stamp, &chars);
-    logf("build check: %ls %lld bytes, fnv64 %016llx %s", path, size.QuadPart, h, ok ? "(known build)" : "(UNKNOWN build)");
-    logf("build check: sha256 %s, PE timestamp %08x, large-address-aware %s", sha256_hex(data).c_str(), pe ? stamp : 0,
-         !pe ? "?" : (chars & IMAGE_FILE_LARGE_ADDRESS_AWARE) ? "on" : "off");
-    if (!ok) {
-        if (pe && stamp == kExeTimestamp)
-            logf("build check: same build as the supported one (timestamp matches) but the file was changed, "
-                 "probably by another mod or patcher; Steam > Properties > Installed Files > Verify integrity "
-                 "restores it");
-        else
-            logf("build check: a different build (supported: Steam build 569304, %llu bytes, PE timestamp %08x)",
-                 kExeSize, kExeTimestamp);
+    const vr::ExeCheck c = vr::check_exe(data.data(), data.size());
+    const size_t n = vr::anchor_count();
+    const bool ok = c.compatible();
+    logf("build check: %ls %lld bytes, fnv64 %016llx %s", path, size.QuadPart, c.fnv64,
+         c.known ? "(known build)" : ok ? "(patched copy of the supported build - compatible)" : "(UNKNOWN build)");
+    logf("build check: sha256 %s, PE timestamp %08x, large-address-aware %s", sha256_hex(data).c_str(), c.timestamp,
+         !c.pe ? "?" : (c.characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) ? "on" : "off");
+    if (c.known) return true;
+    if (ok) {
+        logf("build check: WARNING: HOTD_NG.exe was changed (by another mod or patcher?), but all %zu places the mod "
+             "uses are as in the supported build, so VR stays on. Changed: %s. If something misbehaves, try the "
+             "unchanged exe (Steam > Properties > Installed Files > Verify integrity) before reporting it.",
+             n, join(c.changed).c_str());
+        return true;
     }
-    return ok;
+    for (const std::string& p : c.problems) logf("build check: %s", p.c_str());
+    for (const vr::AnchorFailure& fl : c.failures) {
+        const vr::Anchor& a = *fl.anchor;
+        logf("build check: anchor \"%s\" (%s) at 0x%X: expected %s, found %s", a.name, vr::anchor_kind_name(a.kind), a.va,
+             vr::hex_bytes(a.bytes, a.len).c_str(),
+             fl.in_file ? vr::hex_bytes(fl.found, a.len).c_str() : "nothing (outside the file's sections)");
+    }
+    if (c.pe) logf("build check: differs from the supported build in: %s", join(c.changed).c_str());
+    if (c.pe && c.timestamp == vr::known_exe_timestamp())
+        logf("build check: %zu of %zu places the mod uses differ: the supported build, changed by another mod or "
+             "patcher where this mod hooks or reads it; Steam > Properties > Installed Files > Verify integrity "
+             "restores it",
+             c.failures.size(), n);
+    else
+        logf("build check: a different build (supported: Steam build 569304, %llu bytes, PE timestamp %08x)",
+             static_cast<unsigned long long>(vr::known_exe_size()), vr::known_exe_timestamp());
+    return false;
 }
 
 }  // namespace hv

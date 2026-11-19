@@ -16,6 +16,11 @@
 // DirectInput for the controller buttons, the cursor for menu pointing) and keep the window as the
 // game makes it (forced windowed: the D3D9Ex hand-off needs it), unless [vr] keep_active=1 asks
 // for the game to keep running when its window loses focus.
+//
+// An exe the build check refuses (src/vr/exe_anchors.h): release = a plain XInput pass-through.
+// Development keeps the harness's own import-table hooks (save redirect, window, mute, logging) so
+// a test run of a refused exe never touches the real save, but hooks nothing in the game's code
+// or its Direct3D device (no VR, no command file).
 
 namespace hv::vr {
 
@@ -24,12 +29,14 @@ struct HarnessIn {
     bool dev_key = false;    // hovr.ini [vr] dev=1
     bool vr_mode = false;    // [vr] mode is sim or openvr
     bool shift = false;      // Shift held while the DLL loaded
+    bool exe_ok = true;      // the build check accepted HOTD_NG.exe (known build or compatible copy)
 };
 
 struct HarnessPlan {
     bool dev = false;            // development harness
     bool vr = false;             // VR runs (mode != off and no Shift)
     bool hooks = false;          // install any hooks at all (false: plain XInput pass-through)
+    bool game_hooks = false;     // hooks that reach the game's code or device (Direct3D, DirectInput, detours)
     bool redirect_save = false;  // SHGetFolderPathA user folders -> hovr\ (refuse to run if it fails)
     bool command_file = false;   // poll hovr\cmd.txt, write hovr\status.txt
     bool dev_logging = false;    // asset-open and shader-compile logging
@@ -44,10 +51,11 @@ struct HarnessPlan {
 inline HarnessPlan plan_harness(const HarnessIn& in) {
     HarnessPlan p;
     p.dev = in.probe_ini || in.dev_key;
-    p.vr = in.vr_mode && !in.shift;
+    p.vr = in.vr_mode && !in.shift && in.exe_ok;
     p.hooks = p.dev || p.vr;
+    p.game_hooks = p.hooks && in.exe_ok;
     p.redirect_save = p.dev;
-    p.command_file = p.dev;
+    p.command_file = p.dev && in.exe_ok;  // polled from the Direct3D Present hook
     p.dev_logging = p.dev;
     p.probe_ini_keys = p.dev;
     p.minimized = p.dev;  // dev defaults; probe.ini may change them

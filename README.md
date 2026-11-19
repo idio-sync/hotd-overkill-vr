@@ -41,9 +41,11 @@ log `hovr\hovr.log` from the game's folder.
 
 ## What you need
 
-- *The Typing of the Dead: Overkill* **on Steam, Windows**. Only the current Steam version (build
-  569304) is supported. The mod checks this itself: with any other version it does nothing and
-  the game plays normally.
+- *The Typing of the Dead: Overkill* **on Steam, Windows**: the current Steam version (build
+  569304). Copies of its `HOTD_NG.exe` changed by other patchers or mods (a 4 GB / Large Address
+  Aware patch, for example) work as long as they leave the parts the mod uses alone. The mod
+  checks this itself at every start: with another version, or a change where it hooks in, it does
+  nothing and the game plays normally, and `hovr\hovr.log` says which part differs.
 - **SteamVR** and a PC VR headset with **two tracked motion controllers**. It is being designed for
   the Steam Frame; other SteamVR headsets should work.
 - No game files are included; you need your own copy of the game.
@@ -160,11 +162,16 @@ comfort switches) is described in [docs/SETTINGS.md](docs/SETTINGS.md)
 - **Something goes wrong**: close the game and start it again holding **Shift** to play without
   VR. Then please open an issue with `hovr\hovr.log` attached.
 - **The game starts flat and never goes into VR, and `hovr\hovr.log` says "not the supported
-  build"**: the mod only works with the unmodified Steam `HOTD_NG.exe` and switches itself off for
-  anything else. Another mod, fix or patcher may have changed the exe. In Steam, right-click the
-  game → Properties → Installed Files → **Verify integrity of game files**, then try again. If the
-  log still says "UNKNOWN build", please open an issue with the log: it includes the exe's
-  checksum and says whether yours is a changed copy or a different build.
+  build"**: the mod switched itself off because `HOTD_NG.exe` is another version, or a copy that
+  another mod, fix or patcher changed in a place the mod hooks into. The log lists each such place
+  (`anchor "..." at 0x...: expected ..., found ...`) and says whether the exe is a changed copy of
+  the supported build or a different build. For a changed copy: undo that other patch, or in
+  Steam right-click the game → Properties → Installed Files → **Verify integrity of game files**,
+  then try again. If that doesn't help, please open an issue with the log.
+- **The log says "patched copy of the supported build - compatible"**: your exe was changed by
+  something else (the log names which parts, such as "PE headers" for a 4 GB patch), but nothing
+  the mod uses, so VR is on. If something misbehaves, try the unchanged exe (Verify integrity)
+  before reporting it, and mention the patch in the report.
 - **Virtual Desktop, Quest or other non-SteamVR headsets**: the mod talks to SteamVR, so start the
   game through SteamVR (in Virtual Desktop, launch SteamVR first). Virtual Desktop's own OpenXR
   runtime on its own won't work.

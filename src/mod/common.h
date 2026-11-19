@@ -43,7 +43,9 @@ bool patch_import(HMODULE module, const char* dll, const char* func, void* hook,
 bool patch_vtbl(void* object, int index, void* hook, void** orig);
 uint64_t fnv64(const void* data, size_t size);
 
-bool exe_is_known_build();  // buildcheck.cpp: HOTD_NG.exe on disk is the supported build
+// buildcheck.cpp: HOTD_NG.exe on disk is the supported build, or a patched copy of it whose
+// anchors (every place the mod uses, src/vr/exe_anchors.h) all match; logs the verdict.
+bool exe_is_supported();
 
 // VR settings (config.cpp): hovr\hovr.ini [vr].
 enum class VrMode { off, sim, openvr };
@@ -116,7 +118,9 @@ bool vr_ini_floats(const char* key, float* out, int n);  // [vr] KEY = a,b,c...:
 void install_folder_hook();   // SHGetFolderPathA(APPDATA) -> hovr\AppData
 void install_window_hooks();  // minimized window, faked activation and cursor
 void install_compile_hooks();  // D3DXCompileShader / D3DXAssembleShader source dumps
-void install_d3d_hooks();     // Direct3DCreate9 -> device vtable hooks
+// Direct3DCreate9 -> device vtable hooks; game_hooks false (development, exe refused): only the
+// harness's forced windowed device, nothing hooked on the device.
+void install_d3d_hooks(bool game_hooks);
 void start_audio_mute();
 void install_dinput_hooks();  // DirectInput8: scripted mouse buttons/motion and keys
 void install_file_hooks();    // logs .pc asset opens

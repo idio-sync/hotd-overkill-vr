@@ -7,7 +7,8 @@
 #
 # Adds to the game folder: XINPUT1_3.dll (the mod), openvr_api.dll (SteamVR's API) and hovr\
 # (hovr.ini settings, hovr.log, installed.txt). Nothing else in the game folder or your save is
-# changed. It checks first that HOTD_NG.exe is the one build the mod supports, and refuses to install
+# changed. It checks first that HOTD_NG.exe is the one build the mod supports (or a patched copy of
+# it that leaves every place the mod uses alone: tools\anchors.py --check), and refuses to install
 # over an XINPUT1_3.dll or openvr_api.dll that it did not put there. Uninstall removes exactly the
 # files it installed (checked by hash, or by the mod's marker for XINPUT1_3.dll) and keeps
 # hovr\hovr.ini and the log unless -Purge is given.
@@ -89,7 +90,21 @@ if ($Uninstall) {
 $size = (Get-Item -LiteralPath $exe).Length
 $sha = Get-Sha256 $exe
 if ($size -ne $KnownExeSize -or $sha -ne $KnownExeSha256) {
-    throw "HOTD_NG.exe in $Game is not the supported build (Steam build 569304): $size bytes, SHA-256 $sha. Nothing installed."
+    # Not the exact file: a patched copy is fine when every place the mod uses is unchanged - the
+    # same rule as the mod's own check (tools\anchors.py --check reads src\vr\exe_anchors_table.h).
+    $anchors = Join-Path $PSScriptRoot 'anchors.py'
+    $venv = Join-Path $PSScriptRoot '..\.venv\Scripts\python.exe'
+    $py = if (Test-Path -LiteralPath $venv) { $venv } else { (Get-Command python, py -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+    if (-not $py -or -not (Test-Path -LiteralPath $anchors)) {
+        throw "HOTD_NG.exe in $Game is not the supported build (Steam build 569304): $size bytes, SHA-256 $sha, and Python or tools\anchors.py is missing to check whether it is a compatible patched copy. Nothing installed."
+    }
+    $report = & $py -I $anchors --check $exe 2>&1
+    $code = $LASTEXITCODE
+    $report | ForEach-Object { Write-Output "  $_" }
+    if ($code -ne 0) {
+        throw "HOTD_NG.exe in $Game is not the supported build (Steam build 569304) or a compatible patched copy of it (see above). Nothing installed."
+    }
+    Write-Output 'HOTD_NG.exe is a patched copy of the supported build, compatible with the mod (see above)'
 }
 foreach ($f in $Files) {
     if (-not (Test-Path -LiteralPath (Join-Path $From $f))) { throw "missing $f in $From (build first: build.cmd)" }

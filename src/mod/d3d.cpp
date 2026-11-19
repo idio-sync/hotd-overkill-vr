@@ -798,6 +798,7 @@ using CreateDevice_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE
 static CreateDevice_t o_CreateDevice;
 
 static bool g_want_ex;
+static bool g_game_hooks = true;  // false: the exe was refused (development): no device hooks
 
 static HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD behavior,
                                                  D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** dev) {
@@ -808,6 +809,7 @@ static HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, 
     HRESULT hr = g_want_ex ? ex_create_device(adapter, type, focus, behavior, pp, dev)
                            : o_CreateDevice(d3d, adapter, type, focus, behavior, pp, dev);
     logf("CreateDevice -> %08lx", hr);
+    if (!g_game_hooks) return hr;
     if (SUCCEEDED(hr)) hook_device(*dev);
     if (SUCCEEDED(hr) && ex_enabled()) handoff_init(*dev);
     return hr;
@@ -818,7 +820,7 @@ static Direct3DCreate9_t o_Direct3DCreate9;
 
 static IDirect3D9* WINAPI hk_Direct3DCreate9(UINT sdk) {
     static bool started;
-    if (!started) {
+    if (!started && g_game_hooks) {
         started = true;
         vrsys_start();  // OpenVR (mode=openvr) before any render target is sized; failure -> off
     }
@@ -835,7 +837,8 @@ static IDirect3D9* WINAPI hk_Direct3DCreate9(UINT sdk) {
     return d3d;
 }
 
-void install_d3d_hooks() {
+void install_d3d_hooks(bool game_hooks) {
+    g_game_hooks = game_hooks;
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     g_qpf = f.QuadPart;

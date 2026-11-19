@@ -611,6 +611,13 @@ static void test_harness_plan() {
             CHECK(!rel.minimized && !rel.mute && !rel.fake_pad);
             CHECK(rel.vr == (vr_mode && !shift));
             CHECK(rel.hooks == (vr_mode && !shift));  // mode=off or Shift: a plain XInput pass-through
+            CHECK(rel.game_hooks == rel.hooks && dev.game_hooks);
+            // A refused exe: release hooks nothing; development keeps only the harness's own hooks.
+            HarnessPlan rel_bad = plan_harness({false, false, vr_mode, shift, false});
+            CHECK(!rel_bad.hooks && !rel_bad.game_hooks && !rel_bad.vr);
+            HarnessPlan dev_bad = plan_harness({true, false, vr_mode, shift, false});
+            CHECK(dev_bad.dev && dev_bad.hooks && !dev_bad.game_hooks && !dev_bad.vr && !dev_bad.command_file);
+            CHECK(dev_bad.redirect_save && dev_bad.minimized && dev_bad.mute);
         }
 }
 
