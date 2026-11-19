@@ -16,6 +16,7 @@ add_library(hovr SHARED
     src/mod/util.cpp
     src/mod/config.cpp
     src/mod/buildcheck.cpp
+    src/mod/crash.cpp
     src/mod/folder.cpp
     src/mod/window.cpp
     src/mod/xinput.cpp

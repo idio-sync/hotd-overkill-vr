@@ -588,6 +588,10 @@ FrameRequests control_tick() {
             request_drawstack(strtoull(h.c_str(), nullptr, 16), n);
         } else if (cmd == "log") {
             logf("log: %s", line.size() > 4 ? line.c_str() + 4 : "");
+        } else if (line == "crash now") {
+            // Tests the crash handler (src/mod/crash.cpp): a write to address 0x10.
+            logf("crash now: writing to 0x10");
+            *reinterpret_cast<volatile int*>(uintptr_t(0x10)) = 1;
         } else if (cmd == "fakevr") {
             // The test runtime (src/fakevr): its scripting, in order with these commands.
             using FakeCmd = void(__cdecl*)(const char*);

@@ -288,6 +288,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
         g_frame = nullptr;
         logf("frame log written (frame %d)", g_frame_no);
     }
+    install_crash_handler();  // once
     if (harness_int(L"gun_hook", 1, 1)) install_gun_hooks();  // once; after SecuROM's start-up patching
     gun_frame();
     gunmodel_frame();
@@ -335,9 +336,10 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* a
     if (!last_report) last_report = now.QuadPart;
     double since = double(now.QuadPart - last_report) / g_qpf;
     if (since >= 5.0) {
-        char status[300];
-        snprintf(status, sizeof status, "frame %d: %.1f fps, dt %.2f-%.2f ms, %d draws last frame%s", g_frame_no,
-                 frames_since / since, min_dt * 1000.0 / g_qpf, max_dt * 1000.0 / g_qpf, g_draws, stereo_status());
+        char status[700];
+        snprintf(status, sizeof status, "frame %d: %.1f fps, dt %.2f-%.2f ms, %d draws last frame%s; %s", g_frame_no,
+                 frames_since / since, min_dt * 1000.0 / g_qpf, max_dt * 1000.0 / g_qpf, g_draws, stereo_status(),
+                 address_space_status().c_str());
         logf("%s", status);
         if (dev_harness()) write_status(status);
         static int reports;
@@ -518,6 +520,7 @@ static HRESULT STDMETHODCALLTYPE hk_SetRenderTarget(IDirect3DDevice9* dev, DWORD
         s->GetDesc(&d);
         g_vp = {0, 0, d.Width, d.Height, 0.f, 1.f};
         stereo_set_rt(s);
+        stereo_rebind_depth(dev);  // a widened target needs a depth surface as big as it
     }
     return hr;
 }
@@ -529,7 +532,7 @@ static HRESULT STDMETHODCALLTYPE hk_SetDepthStencilSurface(IDirect3DDevice9* dev
         flog("SetDepthStencil %p %ux%u %s", s, d.Width, d.Height, fmt_name(d.Format));
     }
     stereo_note_depth(s);
-    return o_SetDepthStencilSurface(dev, stereo_redirect_depth(s));
+    return stereo_bind_depth(dev, stereo_redirect_depth(s));
 }
 
 static HRESULT STDMETHODCALLTYPE hk_Clear(IDirect3DDevice9* dev, DWORD n, const D3DRECT* r, DWORD flags, D3DCOLOR c, float z, DWORD s) {

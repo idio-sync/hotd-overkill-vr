@@ -27,13 +27,60 @@ static UINT g_adapter;
 static std::mutex g_mx;
 static std::set<void*> g_converted;  // textures and cube textures created DEFAULT for MANAGED
 
+// Where a staged lock's pixels go. Drivers differ in which they allow for a format: the AMD test
+// GPU took system-memory offscreen surfaces of every format, while an NVIDIA RTX 4080 SUPER refused
+// them for DXT1/DXT5 (D3DERR_INVALIDCALL, user report 2026-11-19) - and a failed lock handed back
+// to the game crashed it soon after (the game does not check, and writes through the pointer). So
+// a lock tries a one-level system-memory texture, then an offscreen surface, and as a last resort
+// hands out a plain memory buffer whose contents are dropped (the texture keeps its old pixels):
+// a lock of a converted texture never fails.
+enum class StageKind { texture, offscreen, buffer };
 struct Staging {
-    IDirect3DSurface9* sys;
-    RECT rect;  // the locked rect in the level
+    IDirect3DSurface9* sys;     // texture/offscreen: the system-memory surface (locked)
+    IDirect3DTexture9* systex;  // texture: its owner
+    void* buffer;               // buffer: the memory handed to the game
+    RECT rect;                  // the locked rect in the level
     DWORD flags;
 };
 static std::map<std::pair<void*, UINT>, Staging> g_staging;  // (resource, face << 8 | level)
-static long g_staged_locks, g_readonly_locks, g_failed_locks;
+static long g_staged_locks, g_readonly_locks, g_failed_locks, g_buffer_locks, g_offscreen_locks;
+static int g_force = -1;  // development: HOVR_STAGING=texture|offscreen|buffer forces one kind
+
+static int forced_kind() {
+    if (g_force < 0) {
+        char v[32] = {};
+        GetEnvironmentVariableA("HOVR_STAGING", v, sizeof v);
+        g_force = !strcmp(v, "texture") ? int(StageKind::texture) + 1
+                  : !strcmp(v, "offscreen") ? int(StageKind::offscreen) + 1
+                  : !strcmp(v, "buffer") ? int(StageKind::buffer) + 1
+                  : !strcmp(v, "fail")   ? 99  // 0.1.3's behaviour on that NVIDIA card: the lock fails
+                                         : 0;
+        if (g_force) logf("d3d9ex: HOVR_STAGING=%s: every staged lock uses it", v);
+    }
+    return g_force;
+}
+
+// A format's storage unit: `dim` x `dim` pixels (4 for block-compressed formats, else 1) in
+// `bytes` bytes. Unknown formats get 16 bytes a pixel: only used to size the last-resort buffer,
+// so too big is harmless.
+struct Unit {
+    UINT dim, bytes;
+};
+static Unit format_unit(D3DFORMAT f) {
+    UINT bpp = 16;
+    switch (f) {
+    case D3DFMT_DXT1: return {4, 8};
+    case D3DFMT_DXT2: case D3DFMT_DXT3: case D3DFMT_DXT4: case D3DFMT_DXT5: return {4, 16};
+    case D3DFMT_L8: case D3DFMT_A8: case D3DFMT_P8: case D3DFMT_A4L4: bpp = 1; break;
+    case D3DFMT_R5G6B5: case D3DFMT_X1R5G5B5: case D3DFMT_A1R5G5B5: case D3DFMT_A4R4G4B4: case D3DFMT_X4R4G4B4:
+    case D3DFMT_A8L8: case D3DFMT_L16: case D3DFMT_V8U8: case D3DFMT_R16F: bpp = 2; break;
+    case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: case D3DFMT_A8B8G8R8: case D3DFMT_X8B8G8R8: case D3DFMT_A2R10G10B10:
+    case D3DFMT_A2B10G10R10: case D3DFMT_G16R16: case D3DFMT_G16R16F: case D3DFMT_R32F: case D3DFMT_Q8W8V8U8: bpp = 4; break;
+    case D3DFMT_A16B16G16R16: case D3DFMT_A16B16G16R16F: case D3DFMT_G32R32F: bpp = 8; break;
+    default: break;
+    }
+    return {1, bpp};
+}
 
 bool ex_enabled() { return g_ex; }
 
@@ -99,23 +146,59 @@ static HRESULT stage_lock(void* res, UINT key, IDirect3DSurface9* level_surface,
     level_surface->GetDesc(&d);
     IDirect3DDevice9* dev = nullptr;
     level_surface->GetDevice(&dev);
-    IDirect3DSurface9* sys = nullptr;
-    HRESULT hr = dev ? dev->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr) : E_FAIL;
-    if (dev) dev->Release();
-    if (FAILED(hr)) {
-        if (g_failed_locks++ < 10) logf("d3d9ex: staging %ux%u fmt %d for a lock failed (%08lx)", d.Width, d.Height, int(d.Format), hr);
-        return hr;
-    }
     const DWORD sys_flags = flags & D3DLOCK_READONLY;
-    hr = sys->LockRect(lr, r, sys_flags);
-    if (FAILED(hr)) {
-        sys->Release();
-        return hr;
+    const int force = forced_kind();
+    if (force == 99 && format_unit(d.Format).dim == 4) {  // the user's card refused DXT1 and DXT3
+        if (dev) dev->Release();
+        if (g_failed_locks++ < 20) logf("d3d9ex: HOVR_STAGING=fail: a %ux%u lock of format %d fails", d.Width, d.Height, int(d.Format));
+        return D3DERR_INVALIDCALL;
     }
-    RECT rect = r ? *r : RECT{0, 0, LONG(d.Width), LONG(d.Height)};
+    Staging st{};
+    HRESULT hr_tex = E_FAIL, hr_off = E_FAIL;
+    // 1. a one-level system-memory texture of the level's size and format
+    if (dev && (!force || force == int(StageKind::texture) + 1)) {
+        hr_tex = dev->CreateTexture(d.Width, d.Height, 1, 0, d.Format, D3DPOOL_SYSTEMMEM, &st.systex, nullptr);
+        if (SUCCEEDED(hr_tex)) {
+            hr_tex = st.systex->GetSurfaceLevel(0, &st.sys);
+            if (SUCCEEDED(hr_tex)) hr_tex = st.sys->LockRect(lr, r, sys_flags);
+            if (FAILED(hr_tex)) {
+                if (st.sys) st.sys->Release();
+                st.systex->Release();
+                st.sys = nullptr, st.systex = nullptr;
+            }
+        }
+    }
+    // 2. a system-memory offscreen surface
+    if (!st.sys && dev && (!force || force == int(StageKind::offscreen) + 1)) {
+        hr_off = dev->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &st.sys, nullptr);
+        if (SUCCEEDED(hr_off)) {
+            hr_off = st.sys->LockRect(lr, r, sys_flags);
+            if (FAILED(hr_off)) st.sys->Release(), st.sys = nullptr;
+            else ++g_offscreen_locks;
+        }
+    }
+    if (dev) dev->Release();
+    // 3. plain memory: the game's writes land somewhere harmless and are dropped
+    if (!st.sys) {
+        const Unit u = format_unit(d.Format);
+        const UINT pitch = (d.Width + u.dim - 1) / u.dim * u.bytes, rows = (d.Height + u.dim - 1) / u.dim;
+        st.buffer = calloc(size_t(pitch) * rows + 64, 1);
+        if (!st.buffer) return E_OUTOFMEMORY;
+        // pBits points at the locked rect's first unit, as a real lock's does
+        const UINT ox = r ? UINT(r->left) / u.dim * u.bytes : 0, oy = r ? UINT(r->top) / u.dim : 0;
+        lr->Pitch = INT(pitch);
+        lr->pBits = static_cast<uint8_t*>(st.buffer) + size_t(oy) * pitch + ox;
+        ++g_buffer_locks;
+        if (g_failed_locks++ < 20)
+            logf("d3d9ex: no staging surface for a %ux%u lock of format %d (texture %08lx, offscreen %08lx): its new "
+                 "contents are dropped",
+                 d.Width, d.Height, int(d.Format), hr_tex, hr_off);
+    }
+    st.rect = r ? *r : RECT{0, 0, LONG(d.Width), LONG(d.Height)};
+    st.flags = flags;
     {
         std::lock_guard lock(g_mx);
-        g_staging[{res, key}] = {sys, rect, flags};
+        g_staging[{res, key}] = st;
     }
     ++g_staged_locks;
     if (flags & D3DLOCK_READONLY) {
@@ -133,8 +216,12 @@ static bool stage_unlock(void* res, UINT key, IDirect3DSurface9* level_surface, 
         s = it->second;
         g_staging.erase(it);
     }
-    s.sys->UnlockRect();
     *out = S_OK;
+    if (s.buffer) {
+        free(s.buffer);
+        return true;
+    }
+    s.sys->UnlockRect();
     if (!(s.flags & D3DLOCK_READONLY) && level_surface) {
         IDirect3DDevice9* dev = nullptr;
         level_surface->GetDevice(&dev);
@@ -145,6 +232,7 @@ static bool stage_unlock(void* res, UINT key, IDirect3DSurface9* level_surface, 
         if (FAILED(*out) && errors++ < 10) logf("d3d9ex: UpdateSurface after a staged lock -> %08lx", *out);
     }
     s.sys->Release();
+    if (s.systex) s.systex->Release();
     return true;
 }
 
@@ -240,14 +328,15 @@ void ex_forget(void* res) {
 }
 
 const char* ex_status() {
-    static char buf[160];
+    static char buf[200];
     if (!g_ex) return "";
     size_t n;
     {
         std::lock_guard lock(g_mx);
         n = g_converted.size();
     }
-    snprintf(buf, sizeof buf, ", d3d9ex: %zu converted textures, %ld staged locks", n, g_staged_locks);
+    snprintf(buf, sizeof buf, ", d3d9ex: %zu converted textures, %ld staged locks (%ld offscreen, %ld dropped)", n,
+             g_staged_locks, g_offscreen_locks, g_buffer_locks);
     return buf;
 }
 

@@ -162,6 +162,28 @@ void stereo_target_real_size(bool composite, unsigned w, unsigned h, int eye_w, 
     *out_h = unsigned(std::lround(double(h) * eye_h / 720.0));
 }
 
+static bool plausible_resolution(unsigned w, unsigned h) { return w >= 320 && h >= 200 && w <= 16384 && h <= 16384; }
+
+bool composite_game_size(unsigned res_w, unsigned res_h, unsigned bb_w, unsigned bb_h, unsigned* out_w, unsigned* out_h) {
+    if (!plausible_resolution(res_w, res_h) || !bb_w || !bb_h) return false;
+    if (res_w <= bb_w && res_h <= bb_h) {
+        *out_w = res_w, *out_h = res_h;
+        return true;
+    }
+    const double s = std::min(double(bb_w) / res_w, double(bb_h) / res_h);
+    *out_w = unsigned(std::lround(res_w * s));
+    *out_h = unsigned(std::lround(res_h * s));
+    return true;
+}
+
+bool config_resolution(const unsigned char* data, size_t size, unsigned* w, unsigned* h) {
+    if (!data || size < 6) return false;
+    const unsigned rw = data[2] | unsigned(data[3]) << 8, rh = data[4] | unsigned(data[5]) << 8;
+    if (!plausible_resolution(rw, rh)) return false;
+    *w = rw, *h = rh;
+    return true;
+}
+
 float widened_half_angle(float eye_half, float cone, float margin) {
     const float limit = 89.0f * 3.14159265f / 180.0f;
     const float h = eye_half + cone + margin;

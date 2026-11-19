@@ -161,6 +161,10 @@ comfort switches) is described in [docs/SETTINGS.md](docs/SETTINGS.md)
 
 - **Something goes wrong**: close the game and start it again holding **Shift** to play without
   VR. Then please open an issue with `hovr\hovr.log` attached.
+- **The game crashes**: please open an issue with `hovr\hovr.log` and `hovr\crash.dmp` (written
+  when the game crashes: parts of the game's memory that show where it crashed, which can include
+  file paths with your Windows user name). Say which graphics card and headset you use, and the resolution and
+  anti-aliasing setting in the game's options.
 - **The game starts flat and never goes into VR, and `hovr\hovr.log` says "not the supported
   build"**: the mod switched itself off because `HOTD_NG.exe` is another version, or a copy that
   another mod, fix or patcher changed in a place the mod hooks into. The log lists each such place

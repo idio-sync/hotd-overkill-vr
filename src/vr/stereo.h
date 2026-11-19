@@ -72,4 +72,14 @@ float widened_half_angle(float eye_half, float cone, float margin);
 // pixels to post-process, copy and submit than the headset asked for).
 void stereo_target_real_size(bool composite, unsigned w, unsigned h, int eye_w, int eye_h, unsigned* out_w, unsigned* out_h);
 
+// The composite target's game size: the resolution chosen in the game's options (its save folder's
+// `config` file), scaled down to fit the back buffer with its aspect kept when it is bigger -
+// 1680x1050 at a 1920x1200 back buffer, 1291x807 in a 1536x807 window, 1920x1080 at 2560x1440.
+// False for an implausible resolution.
+bool composite_game_size(unsigned res_w, unsigned res_h, unsigned bb_w, unsigned bb_h, unsigned* out_w, unsigned* out_h);
+
+// Reads the resolution from the game's 12-byte `config` file (16-bit width and height at bytes 2
+// and 4, little-endian). False if the data is too short or the values are implausible.
+bool config_resolution(const unsigned char* data, size_t size, unsigned* w, unsigned* h);
+
 }  // namespace hv::vr

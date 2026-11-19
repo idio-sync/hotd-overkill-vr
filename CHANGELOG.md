@@ -6,6 +6,35 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+Fixes for anti-aliasing switched off or resolutions other than 1680x1050 in the game's options,
+for missing textures on some graphics cards, and a crash report. They come from a user report
+(NVIDIA RTX 4080 SUPER, Quest 3, 1920x1080 with anti-aliasing off on a 2560x1440 desktop) of the
+game crashing a few seconds after it started; that crash itself could not be reproduced here, so
+it may not be fixed: if it still happens, the new crash report says where.
+
+### Fixed
+
+- **Textures missing on some graphics cards** (seen on NVIDIA): the mod copies the game's texture
+  uploads through a temporary surface, and that card's driver refused to make one for compressed
+  (DXT) textures, so those uploads failed. Uploads now go through a system-memory texture, with
+  two fallbacks, and an upload never fails: at worst its new pixels are dropped, and
+  `hovr\hovr.log` says so.
+- **Only part of the picture drawn with anti-aliasing off** in the game's options: the game then
+  draws its final image with the desktop-sized depth buffer, smaller than the image the mod widens
+  for two eyes, so menus filled only the top-left corner. A depth buffer of the right size now
+  stands in.
+- **The HUD and eye images with resolutions other than 1680x1050** in the game's options (such as
+  1920x1080, or the desktop's own resolution): the mod now reads the resolution from the game's
+  settings file to find the game's final image, instead of guessing it from its shape.
+
+### Added
+
+- **Crash report**: if the game crashes, `hovr\hovr.log` says where (module, offset and the
+  return addresses on the stack) and `hovr\crash.dmp` holds a small minidump. Please attach both
+  to a report. The log's 5-second status lines also show how much of the game's address space is
+  used (it is a 32-bit game: 2 GB, or 4 GB with a Large Address Aware patch; about 1 GB of it at
+  the menus without VR, 1.3 GB in gameplay with VR at 2752x2688 per eye on the test PC).
+
 ## [0.1.3] - 2026-11-18
 
 Copies of the game exe changed by other patchers now work, as long as they leave the parts the

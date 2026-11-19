@@ -199,6 +199,26 @@ static void test_stereo_target_real_size() {
     CHECK(w == 2560 && h == 720);
 }
 
+static void test_composite_game_size() {
+    unsigned w = 0, h = 0;
+    // seen: 1680x1050 configured, 1920x1200 back buffer (fits as it is)
+    CHECK(composite_game_size(1680, 1050, 1920, 1200, &w, &h) && w == 1680 && h == 1050);
+    // seen: 1680x1050 configured, 1536x807 window -> 1291x807
+    CHECK(composite_game_size(1680, 1050, 1536, 807, &w, &h) && w == 1291 && h == 807);
+    // user report 2026-11-19: 1920x1080 at a 2560x1440 back buffer
+    CHECK(composite_game_size(1920, 1080, 2560, 1440, &w, &h) && w == 1920 && h == 1080);
+    // wider than the back buffer: width-bound
+    CHECK(composite_game_size(2560, 1080, 1920, 1200, &w, &h) && w == 1920 && h == 810);
+    CHECK(!composite_game_size(0, 0, 1920, 1200, &w, &h));
+    CHECK(!composite_game_size(1920, 1080, 0, 0, &w, &h));
+
+    const unsigned char ours[12] = {0x00, 0x01, 0x90, 0x06, 0x1A, 0x04};  // the test save's config
+    CHECK(config_resolution(ours, sizeof ours, &w, &h) && w == 1680 && h == 1050);
+    const unsigned char bad[12] = {0x00, 0x01, 0x10, 0x00, 0x10, 0x00};
+    CHECK(!config_resolution(bad, sizeof bad, &w, &h));
+    CHECK(!config_resolution(ours, 4, &w, &h));
+}
+
 static void test_rigid_inverse() {
     Mat4 a = mul(translation(1, 2, 3), rotation_yaw_pitch(0.7f, -0.3f));
     CHECK(max_abs_diff(mul(a, rigid_inverse(a)), identity()) < 1e-5f);
@@ -1010,6 +1030,7 @@ int main() {
     test_tangents_round_trip();
     test_widened_half_angle();
     test_stereo_target_real_size();
+    test_composite_game_size();
     test_rigid_inverse();
     test_rh_yaw_pitch_forward();
     test_hand_adjust();

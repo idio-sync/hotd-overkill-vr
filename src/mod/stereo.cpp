@@ -69,6 +69,7 @@ static Target g_rt_info;
 static bool g_rt_resized, g_rt_scene;
 static IDirect3DSurface9* g_scene_surface;
 static IDirect3DSurface9* g_game_depth;
+static bool g_game_depth_known;  // the game has set one (else the device's own is bound)
 
 static D3DVIEWPORT9 g_game_vp;
 static RECT g_game_scissor;
@@ -114,8 +115,19 @@ static char g_status[256];
 static std::unordered_map<void*, bool> g_target_textures;
 static bool g_check_requested, g_checking;
 
+static UINT g_cfg_comp_w, g_cfg_comp_h;  // the composite size the game's options give, 0 if unknown
+
 void stereo_set_backbuffer(UINT w, UINT h) {
-    if (w && h) g_bb_w = w, g_bb_h = h;
+    if (!w || !h) return;
+    g_bb_w = w, g_bb_h = h;
+    unsigned rw, rh, cw, ch;
+    if (game_config_resolution(&rw, &rh) && vr::composite_game_size(rw, rh, w, h, &cw, &ch)) {
+        g_cfg_comp_w = cw, g_cfg_comp_h = ch;
+        logf("stereo: back buffer %ux%u, the game's resolution setting %ux%u -> composite target %ux%u", w, h, rw, rh, cw, ch);
+    } else {
+        g_cfg_comp_w = g_cfg_comp_h = 0;
+        logf("stereo: back buffer %ux%u; the game's resolution setting was not readable (composite by its shape)", w, h);
+    }
 }
 
 static Kind kind_of(UINT w, UINT h, bool depth) {
@@ -124,6 +136,11 @@ static Kind kind_of(UINT w, UINT h, bool depth) {
     if (!depth)
         for (auto& s : colour)
             if (s[0] == w && s[1] == h) return kScene;  // the scene's post-processing chain
+    // The composite target is the resolution chosen in the game's options, fitted into the back
+    // buffer (vr::composite_game_size); 1920x1080 at a 2560x1440 back buffer (user report
+    // 2026-11-19) was missed by the shape rules below. Within 2 pixels for the rounding.
+    if (g_cfg_comp_w && std::abs(int(w) - int(g_cfg_comp_w)) <= 2 && std::abs(int(h) - int(g_cfg_comp_h)) <= 2)
+        return kComposite;
     // The composite target: as tall as the back buffer, narrower, wider than tall (1291x807 for a
     // 1536x807 back buffer); or, seen with a 1920x1200 back buffer, a smaller 16:10 one
     // (1680x1050): 16:10 within a few pixels, narrower than the back buffer (not the back buffer's
@@ -201,7 +218,10 @@ void stereo_set_rt(IDirect3DSurface9* s) {
     g_game_scissor = {0, 0, LONG(w), LONG(h)};
 }
 
-void stereo_note_depth(IDirect3DSurface9* s) { g_game_depth = s; }
+void stereo_note_depth(IDirect3DSurface9* s) {
+    g_game_depth = s;
+    g_game_depth_known = true;
+}
 bool stereo_rt_resized() { return g_rt_resized; }
 
 std::vector<IDirect3DSurface9*> stereo_targets() {
@@ -448,7 +468,7 @@ static void hud_begin(IDirect3DDevice9* dev) {
     const D3DVIEWPORT9 vp = g_game_vp;  // in the composite's game size = the HUD texture's size
     const RECT sc = g_game_scissor;
     raw_set_rt(dev, 0, g_hudrt.surf);
-    raw_set_depth(dev, g_hud_depth);
+    stereo_bind_depth(dev, g_hud_depth);
     raw_clear(dev, 0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, D3DCOLOR_ARGB(0, 0, 0, 0), 1, 0);
     stereo_set_rt(g_hudrt.surf);
     g_game_vp = vp;
@@ -479,8 +499,68 @@ IDirect3DSurface9* stereo_redirect_rt(IDirect3DSurface9* s) {
     return s;
 }
 
+// Depth surfaces for widened targets. With anti-aliasing off in the game's options the composite
+// target has no depth surface of its own: the game pairs it with its back-buffer-sized one
+// (1920x1200 here, 2560x1440 in a user's report 2026-11-19), smaller than the widened composite, so
+// the GPU drew only the part of it that the depth surface covered (the menus filled the top-left
+// corner of the screen). Whenever a widened target is bound with a smaller depth surface, a depth
+// surface of the target's real size and the same format is bound in its place (one per game depth
+// surface, kept until a reset).
+struct DepthFit {
+    IDirect3DSurface9* surf;
+    UINT w, h;
+    D3DFORMAT f;
+};
+static std::unordered_map<IDirect3DSurface9*, DepthFit> g_depth_fit;
+static IDirect3DSurface9* g_bound_depth;  // the depth surface really bound
+
+static IDirect3DSurface9* fit_depth(IDirect3DSurface9* s) {
+    if (!s || !g_rt_resized || !g_rt) return s;
+    D3DSURFACE_DESC rd{}, dd{};
+    g_rt->GetDesc(&rd);
+    s->GetDesc(&dd);
+    if (dd.Width >= rd.Width && dd.Height >= rd.Height) return s;
+    DepthFit& fit = g_depth_fit[s];
+    if (!fit.surf || fit.w != rd.Width || fit.h != rd.Height || fit.f != dd.Format) {
+        if (fit.surf) fit.surf->Release();
+        fit = {};
+        IDirect3DDevice9* dev = nullptr;
+        g_rt->GetDevice(&dev);
+        const HRESULT hr = dev ? raw_create_depth(dev, rd.Width, rd.Height, dd.Format, &fit.surf) : E_FAIL;
+        if (dev) dev->Release();
+        logf("stereo: depth %p %ux%u is smaller than the widened target %ux%u: %s", s, dd.Width, dd.Height, rd.Width,
+             rd.Height, SUCCEEDED(hr) ? "a depth surface of the target's size stands in for it" : "a stand-in failed");
+        if (FAILED(hr)) {
+            fit.surf = nullptr;
+            return s;
+        }
+        fit.w = rd.Width, fit.h = rd.Height, fit.f = dd.Format;
+    }
+    return fit.surf;
+}
+
 IDirect3DSurface9* stereo_redirect_depth(IDirect3DSurface9* s) {
-    return g_hud_active && s && s == g_comp_depth ? g_hud_depth : s;
+    if (g_hud_active && s && s == g_comp_depth) return g_hud_depth;
+    return fit_depth(s);
+}
+
+HRESULT stereo_bind_depth(IDirect3DDevice9* dev, IDirect3DSurface9* s) {
+    const HRESULT hr = raw_set_depth(dev, s);
+    if (SUCCEEDED(hr)) g_bound_depth = s;
+    return hr;
+}
+
+void stereo_rebind_depth(IDirect3DDevice9* dev) {
+    if (!g_game_depth_known) {
+        // Nothing set by the game yet: the device's own depth surface is bound.
+        IDirect3DSurface9* own = nullptr;
+        if (FAILED(dev->GetDepthStencilSurface(&own))) own = nullptr;
+        if (own) own->Release();  // the device keeps it alive
+        g_game_depth = g_bound_depth = own;
+        g_game_depth_known = true;
+    }
+    IDirect3DSurface9* want = stereo_redirect_depth(g_game_depth);
+    if (want != g_bound_depth) stereo_bind_depth(dev, want);
 }
 
 // The HUD texture's alpha per draw: sprites blended "over" (DESTBLEND = INVSRCALPHA) add their
@@ -823,6 +903,11 @@ void stereo_reset() {
     if (g_hud_depth) g_hud_depth->Release();
     if (g_bb_resolve) g_bb_resolve->Release();
     g_hud_depth = g_bb_resolve = nullptr;
+    for (auto& [game, fit] : g_depth_fit)
+        if (fit.surf) fit.surf->Release();
+    g_depth_fit.clear();
+    g_bound_depth = nullptr;
+    g_game_depth_known = false;  // Reset binds the device's own depth surface again
     mirror_release();
     gunmodel_reset();
     handoff_release_d3d9();

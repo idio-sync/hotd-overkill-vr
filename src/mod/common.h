@@ -116,6 +116,9 @@ const char* mode_name(VrMode m);
 bool vr_ini_floats(const char* key, float* out, int n);  // [vr] KEY = a,b,c...: true if n numbers were read
 
 void install_folder_hook();   // SHGetFolderPathA(APPDATA) -> hovr\AppData
+bool game_config_resolution(unsigned* w, unsigned* h);  // the game's options' resolution (read only)
+void install_crash_handler();  // logs an unhandled exception and writes hovr\crash.dmp
+std::string address_space_status();  // "address space 1234 of 2048 MB used, largest free block 300 MB"
 void install_window_hooks();  // minimized window, faked activation and cursor
 void install_compile_hooks();  // D3DXCompileShader / D3DXAssembleShader source dumps
 // Direct3DCreate9 -> device vtable hooks; game_hooks false (development, exe refused): only the
@@ -272,6 +275,8 @@ HRESULT stereo_draw(IDirect3DDevice9* dev, DrawFn draw, void* ctx, const void* u
 void stereo_before_rt(IDirect3DDevice9* dev, IDirect3DSurface9* next);
 IDirect3DSurface9* stereo_redirect_rt(IDirect3DSurface9* s);
 IDirect3DSurface9* stereo_redirect_depth(IDirect3DSurface9* s);
+HRESULT stereo_bind_depth(IDirect3DDevice9* dev, IDirect3DSurface9* s);  // binds s for real (tracked)
+void stereo_rebind_depth(IDirect3DDevice9* dev);  // after a render target change: the depth the target needs
 bool stereo_hud_rs(D3DRENDERSTATETYPE s, DWORD v);  // true: swallowed while the HUD is redirected
 SIZE stereo_hud_size();
 bool stereo_frame_active();    // this frame is drawn in stereo (gameplay)

@@ -222,6 +222,22 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   shows where to put `turn`/`move`. `vr comfort wait [X] [MS]` holds the command queue until the
   vignette reaches X; on a timeout it skips to the next `vr comfort end` (captures during fast turns:
   `vr comfort wait 0.5 1200`, `fakevr capture NAME`, `vr comfort end`).
+- Crashes: `crash now` writes to address 0x10, to check the crash handler (`src/mod/crash.cpp`:
+  the faulting module and offset, registers, return addresses and address-space use in the log,
+  `hovr\crash.dmp`). Every 5-second frame line also ends with the address space used.
+
+Texture uploads (`src/mod/d3d9ex.cpp`): locks of the game's textures go through a one-level
+system-memory texture, else a system-memory offscreen surface, else a plain buffer whose pixels are
+dropped. The environment variable `HOVR_STAGING=texture|offscreen|buffer` forces one of them for a
+run (`$env:HOVR_STAGING='buffer'; tools\run.ps1`), and `HOVR_STAGING=fail` makes every
+block-compressed lock fail, as 0.1.3 did on a user's NVIDIA card (with this, the game here
+still ran: it checks the result).
+
+The game's options (`hovr\AppData\sega\typing of the dead overkill\config` in the test copy, 12
+bytes): byte 1 = anti-aliasing (1 on: a 4x MSAA device; 0 off: no MSAA, flip swap effect, lockable
+back buffer, and the composite target shares the back buffer's depth surface), bytes 2-5 = the
+resolution (16-bit width, height). The composite target is that resolution fitted into the back
+buffer.
 
 ## Fake SteamVR runtime (tests without a headset)
 
