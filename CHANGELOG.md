@@ -6,6 +6,8 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-19
+
 Fixes for anti-aliasing switched off or resolutions other than 1680x1050 in the game's options,
 for missing textures on some graphics cards, and a crash report. They come from a user report
 (NVIDIA RTX 4080 SUPER, Quest 3, 1920x1080 with anti-aliasing off on a 2560x1440 desktop) of the
@@ -183,7 +185,8 @@ installer checks it), SteamVR and a headset with tracked controllers.
 Install: README.md, "Install". Uninstall: `install_game.ps1 -Game "<game folder>"
 -Uninstall`, or delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` from the game folder.
 
-[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/idio-sync/hotd-overkill-vr/compare/c96bde3...v0.1.1
