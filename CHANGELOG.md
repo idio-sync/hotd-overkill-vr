@@ -6,6 +6,15 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The build check in `hovr\hovr.log` now also logs the game exe's size, SHA-256, PE timestamp and
+  Large Address Aware flag, and when the exe isn't the supported one it says whether it is a
+  changed copy of the supported build (fix: Steam's "Verify integrity of game files") or a
+  different build.
+- README troubleshooting: what to do when the log says "not the supported build", and that
+  Virtual Desktop / Quest users must start the game through SteamVR.
+
 ## [0.1.2] - 2026-11-18
 
 Comfort settings for the on-rails camera. The first session in a real headset (a Steam Frame)

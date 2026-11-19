@@ -159,6 +159,15 @@ comfort switches) is described in [docs/SETTINGS.md](docs/SETTINGS.md)
 
 - **Something goes wrong**: close the game and start it again holding **Shift** to play without
   VR. Then please open an issue with `hovr\hovr.log` attached.
+- **The game starts flat and never goes into VR, and `hovr\hovr.log` says "not the supported
+  build"**: the mod only works with the unmodified Steam `HOTD_NG.exe` and switches itself off for
+  anything else. Another mod, fix or patcher may have changed the exe. In Steam, right-click the
+  game → Properties → Installed Files → **Verify integrity of game files**, then try again. If the
+  log still says "UNKNOWN build", please open an issue with the log: it includes the exe's
+  checksum and says whether yours is a changed copy or a different build.
+- **Virtual Desktop, Quest or other non-SteamVR headsets**: the mod talks to SteamVR, so start the
+  game through SteamVR (in Virtual Desktop, launch SteamVR first). Virtual Desktop's own OpenXR
+  runtime on its own won't work.
 - **Shots land above or below where the gun points**: adjust `hand_pitch`. If they land to the left
   or right, that's a bug; please report it.
 - **The game stutters or SteamVR shows reprojection**: set `eye_scale=0.8`, or run the headset at
