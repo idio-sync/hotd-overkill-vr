@@ -36,10 +36,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <string>
 
+#include "../vr/gunfit.h"
 #include "../vr/gunpose.h"
 
 struct ID3DXBuffer : IUnknown {
@@ -505,6 +507,143 @@ static void draw_mesh(IDirect3DDevice9* dev, const Mesh& m) {
 
 static int g_draws_logged;
 
+// --- the gun accuracy test (dev `vr shotlog 1`) ---
+// Each frame the gun is drawn: its muzzle point and barrel direction in the world, from the very
+// world matrix it is drawn with (the description's muzzle and barrel through it), the hand pose,
+// and the rail camera's turn speed. gun.cpp's shot log takes the last one at each shot: the frame
+// on screen when the trigger was read.
+static std::mutex g_drawn_mx;
+static DrawnBarrel g_drawn[64];
+static unsigned g_drawn_next;
+
+static void record_drawn(const vr::Mat4& world, const vr::Mat4& hand, const Placement& p) {
+    DrawnBarrel d;
+    d.frame = gun_frame_no();
+    const vr::Vec4 m = vr::apply(world, {p.desc.muzzle[0], p.desc.muzzle[1], p.desc.muzzle[2], 1});
+    const vr::Vec4 b = vr::apply(world, {p.desc.barrel[0], p.desc.barrel[1], p.desc.barrel[2], 0});
+    const float n = std::sqrt(b.x * b.x + b.y * b.y + b.z * b.z);
+    if (!(n > 0) || !(m.w != 0)) return;
+    d.muzzle[0] = m.x / m.w, d.muzzle[1] = m.y / m.w, d.muzzle[2] = m.z / m.w;
+    d.dir[0] = b.x / n, d.dir[1] = b.y / n, d.dir[2] = b.z / n;
+    for (int i = 0; i < 3; ++i) d.hand[i] = hand.m[i][3], d.hand[3 + i] = hand.m[i][2];
+    comfort_rail_turn(&d.turn, &d.turn_frame);
+    snprintf(d.key, sizeof d.key, "%s", p.model->def->key);
+    std::lock_guard lock(g_drawn_mx);
+    g_drawn[g_drawn_next++ % std::size(g_drawn)] = d;
+}
+
+bool gunmodel_last_drawn(DrawnBarrel* out) {
+    std::lock_guard lock(g_drawn_mx);
+    if (!g_drawn_next) return false;
+    *out = g_drawn[(g_drawn_next - 1) % std::size(g_drawn)];
+    return true;
+}
+
+bool gunmodel_weapon_name(uintptr_t weapon, char name[64], char key[16]) {
+    std::lock_guard lock(g_mx);
+    auto it = g_models.find(weapon);
+    if (it == g_models.end() || !it->second.ok) return false;
+    snprintf(name, 64, "%s", it->second.gun.name);
+    snprintf(key, 16, "%s", it->second.def->key);
+    return true;
+}
+
+// Reads a vertex buffer's bytes (a locked read; exception-guarded). The mod makes the device
+// Direct3D 9Ex and creates the game's MANAGED buffers in the DEFAULT pool (d3d9ex.cpp), where a
+// vertex buffer can still be locked; a READONLY lock reads it back (the driver copies it if it
+// lives in video memory).
+static HRESULT seh_read_vb(IDirect3DVertexBuffer9* vb, UINT bytes, void* out) {
+    void* p = nullptr;
+    HRESULT hr = E_FAIL;
+    __try {
+        hr = vb->Lock(0, bytes, &p, D3DLOCK_READONLY);
+        if (SUCCEEDED(hr)) {
+            memcpy(out, p, bytes);
+            vb->Unlock();
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return E_POINTER;
+    }
+    return hr;
+}
+
+static void log_mesh_compare(const char* source, const Model& m, const vr::BoreFit& f, const vr::GunModelDesc& d) {
+    float ang, perp, along;
+    vr::compare_bore(f, d.barrel, d.muzzle, &ang, &perp, &along);
+    const float bn = std::sqrt(d.barrel[0] * d.barrel[0] + d.barrel[1] * d.barrel[1] + d.barrel[2] * d.barrel[2]);
+    logf("shotlog mesh weapon=%s key=%s source=%s axis=%d muzzle=%d method=%s rings=%d round_rings=%d edge_support=%d slab_points=%d radius_cm=%.3f "
+         "rms_cm=%.4f span_cm=%.2f fit_dir=%.6f,%.6f,%.6f fit_muzzle=%.3f,%.3f,%.3f def_dir=%.6f,%.6f,%.6f def_muzzle=%.3f,%.3f,%.3f "
+         "angle_deg=%.3f perp_cm=%.3f along_cm=%.3f why=\"%s\"",
+         m.gun.name, m.def->key, source, int(f.axis_ok), int(f.muzzle_ok), f.method, f.rings, f.rings_round, f.edge_support, f.slab_points, f.radius, f.rms, f.span,
+         f.dir[0], f.dir[1],
+         f.dir[2], f.muzzle[0], f.muzzle[1], f.muzzle[2], d.barrel[0] / bn, d.barrel[1] / bn, d.barrel[2] / bn, d.muzzle[0], d.muzzle[1],
+         d.muzzle[2], ang, perp, along, f.why);
+}
+
+// `vr gunmeshcheck`: the current weapon's bore and muzzle fitted from its live vertex buffer
+// (src/vr/gunfit.h: round rings near the muzzle end, a line through their centres) against the
+// built-in description (kDefs). A hovr.ini override (barrel_/muzzle_/grip_/hold_<weapon>) is logged
+// as such, with its own comparison, and is not a failure.
+void gunmodel_meshcheck() {
+    std::lock_guard lock(g_mx);
+    const Model* m = current_model();
+    if (!m) {
+        logf("vr gunmeshcheck: no weapon model (not in a level, or no model for this weapon)");
+        return;
+    }
+    const Mesh& g = m->gun;
+    D3DVERTEXBUFFER_DESC vd{};
+    if (!seh_vb(g.vb, &vd)) {
+        logf("vr gunmeshcheck: %s: the vertex buffer is gone", g.name);
+        return;
+    }
+    const UINT bytes = g.nv * g.stride;
+    std::vector<float> data((bytes + 3) / 4);
+    const HRESULT hr = seh_read_vb(g.vb, bytes, data.data());
+    if (FAILED(hr)) {
+        logf("vr gunmeshcheck: %s: reading the vertex buffer failed (%08lx; pool %d usage %08lx)", g.name, hr, int(vd.Pool), vd.Usage);
+        return;
+    }
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    const size_t sf = g.stride / 4;
+    int finite = 0;
+    for (UINT i = 0; i < g.nv; ++i) {
+        const float* q = &data[i * sf];
+        if (!std::isfinite(q[0]) || !std::isfinite(q[1]) || !std::isfinite(q[2])) continue;
+        ++finite;
+        for (int k = 0; k < 3; ++k) lo[k] = (std::min)(lo[k], q[k]), hi[k] = (std::max)(hi[k], q[k]);
+    }
+    logf("vr gunmeshcheck: %s: %u vertices read back (%d finite; stride %u, pool %d, usage %08lx), bbox %.2f %.2f %.2f .. %.2f %.2f %.2f cm", g.name,
+         g.nv, finite, g.stride, int(vd.Pool), vd.Usage, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    const vr::GunModelDesc& def = m->def->desc;
+    const vr::BoreFit f = vr::fit_bore(data.data(), g.nv, sf, def.barrel, def.muzzle);
+    for (int i = 0; i < f.n_info; ++i)
+        logf("vr gunmeshcheck: %s: round part at %.2f along the barrel, centre %.3f %.3f %.3f, radius %.3f..%.3f cm, %d points%s", g.name,
+             f.info[i].t, f.info[i].centre[0], f.info[i].centre[1], f.info[i].centre[2], f.info[i].rmin, f.info[i].rmax, f.info[i].points,
+             f.info[i].used ? " (on the fitted axis)" : "");
+    log_mesh_compare("builtin", *m, f, def);
+    // Overrides from hovr.ini (or `vr gunset`): what is in effect differs from the built-in.
+    auto it = g_cfg.find(m->def->key);
+    if (it == g_cfg.end()) return;
+    const WeaponCfg& c = it->second;
+    std::string fields;
+    auto differs = [](const float* a, const float* b, int n) {
+        for (int i = 0; i < n; ++i)
+            if (a[i] != b[i]) return true;
+        return false;
+    };
+    if (differs(c.desc.barrel, def.barrel, 3)) fields += "barrel,";
+    if (differs(c.desc.muzzle, def.muzzle, 3)) fields += "muzzle,";
+    if (differs(c.desc.grip, def.grip, 3)) fields += "grip,";
+    if (c.hold[0] != 0 || c.hold[1] != 0) fields += "hold,";
+    if (fields.empty()) return;
+    fields.pop_back();
+    logf("shotlog mesh_override weapon=%s key=%s fields=%s barrel=%.4f,%.4f,%.4f muzzle=%.3f,%.3f,%.3f grip=%.3f,%.3f,%.3f hold=%.2f,%.2f",
+         g.name, m->def->key, fields.c_str(), c.desc.barrel[0], c.desc.barrel[1], c.desc.barrel[2], c.desc.muzzle[0], c.desc.muzzle[1],
+         c.desc.muzzle[2], c.desc.grip[0], c.desc.grip[1], c.desc.grip[2], c.hold[0], c.hold[1]);
+    if (fields.find("barrel") != std::string::npos || fields.find("muzzle") != std::string::npos) log_mesh_compare("override", *m, f, c.desc);
+}
+
 // Called by stereo.cpp with the scene target and its depth bound, in a stereo frame. eye_clip(eye)
 // gives world -> clip for that eye and sets its viewport.
 void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, int, vr::Mat4*)) {
@@ -517,6 +656,7 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
     if (!ensure_resources(dev)) return;
     vr::Mat4 world;
     if (!vr::gun_world_matrix(view, g_vr.unit_m, hand, p.gun, p.m2g, &world)) return;
+    if (gun_shotlog_on()) record_drawn(world, hand, p);
     // The magazine: along clip_dir (model space) while reloading.
     vr::Mat4 clip_world = world;
     bool draw_clip = p.clip == kClipFixed;

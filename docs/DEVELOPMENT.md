@@ -113,7 +113,8 @@ SecuROM fills or rewrites at runtime (such as its jump table at 0xA71000..0xA718
 - `detour`: the prologue of each function the mod detours (the same bytes the detour itself
   checks at install time, which stays as a second check);
 - `call`: the first instructions of each game function the mod calls;
-- `retaddr`: the call in the weapon's fire whose return address (0x52B164) the mod compares;
+- `retaddr`: the calls whose return addresses the mod compares (the weapon's fire calling
+  FireBullets, 0x52B164; FireBullets calling the world ray cast, 0x50D27E, for the shot log);
 - `global`: for each fixed global the mod reads or writes (0x9F09E0, 0x99B708, 0x99B8F4,
   0x99B770, 0x99B71C, 0x9C7DC0, 0x9C7E48, 0x9C7E88, 0x9C7F20..0x9C7F34; 0x9B01A8 is inside the
   shake detour's prologue), an instruction in the game's code that references it (in a function
@@ -206,6 +207,20 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   the aim point), `vr clipout F` (hold the magazine F of the way out; no F = from the reload),
   `vr gunset WEAPON show|clip|grip|barrel|muzzle|clipdir|hold V...` (live tuning).
   `tools/gun_mesh.py PACK.pc --png DIR` measures the meshes in an installed hud pack.
+- Gun accuracy test (docs/superpowers/specs/2026-11-19-gun-accuracy-design.md; measuring only):
+  `vr shotlog 1` (off by default) logs `shotlog shot` per player-1 shot (the spread-free ray the mod
+  set, the barrel line at fire time, the barrel as drawn in the last frame on screen with its frame
+  number, hand pose and the rail camera's turn speed), `shotlog pellet` per ray cast FireBullets
+  makes (the game's origin, direction after its spread, hit point, entity; `depth` 1+ = bullets
+  carrying on through a hit) and `shotlog proj` per projectile launch (the origin the game wrote
+  back after its offset, the direction; landing not logged); `vr shotlog tag NAME` marks a
+  scenario. `vr gunmeshcheck` fits the current weapon's bore and muzzle from its live vertex buffer
+  (`src/vr/gunfit.h`) and logs `shotlog mesh` against the built-in description (hovr.ini overrides
+  as `mesh_override`). `.venv\Scripts\python -I tools\gun_accuracy.py hovr\probe.log` (the test
+  copy's development log; `hovr.log` in a release install) writes the per-weapon, per-tag report:
+  bias against the drawn and the fire-time barrel, the game's spread, bias by turn speed, the mesh
+  check, the thresholds; `--selftest` checks it on a synthetic log. The ray cast hook (0x5514E0,
+  FireBullets' call at 0x50D279) is installed in the development harness only.
 - Comfort: `vr arms|shake|bob 0|1` (switch `game_arms` / `camera_shake` / `head_bob` live),
   `vr comfort` (arms draws hidden, largest shake offsets, bob amplitudes, edge-pan state),
   `vr wiiview 1` (let the game's edge-pan through, to compare), `vr camlog N` (camera position and

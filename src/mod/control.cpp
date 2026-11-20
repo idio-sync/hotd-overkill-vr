@@ -83,6 +83,12 @@
 //                           hold YAW PITCH (degrees)
 //   vr gunview NAME         sim: look at the gun in the hand: aim, back, right, left, front, top, bottom
 //   vr barrelline 0|1       dev: a red line along the barrel to the aim point
+//   vr shotlog 0|1          dev: the gun accuracy test's shot log (off by default): `shotlog shot|pellet|proj`
+//                           lines per player-1 shot, bullet ray cast and projectile launch, with the barrel
+//                           as drawn in the frame on screen (gun.cpp; tools/gun_accuracy.py reads them)
+//   vr shotlog tag NAME     dev: a scenario marker line in the shot log
+//   vr gunmeshcheck         dev: the current weapon's bore and muzzle fitted from its live vertex buffer,
+//                           against its built-in description (`shotlog mesh` lines; overrides logged)
 //   vr clipout F            dev: hold the magazine F (0..1) of the way out; no F: from the reload state
 //   findstr TEXT            dev: heap addresses holding TEXT (slow: ~1 min)
 //   drawstack HASH [N]      dev: call stacks and bound streams of the next N draws with vertex shader HASH
@@ -445,6 +451,16 @@ FrameRequests control_tick() {
                 while (n < 4 && ss >> vals[n]) ++n;
                 gunmodel_set(a, field, vals, n);
                 gunmodel_log();
+            } else if (what == "shotlog") {
+                if (a == "tag") {
+                    std::string name;
+                    ss >> name;
+                    gun_shotlog_tag(name.empty() ? "untagged" : name);
+                } else {
+                    gun_shotlog(v != 0);
+                }
+            } else if (what == "gunmeshcheck") {
+                gunmodel_meshcheck();
             } else if (what == "barrelline") {
                 gunmodel_barrel_line(v != 0);
             } else if (what == "clipout") {

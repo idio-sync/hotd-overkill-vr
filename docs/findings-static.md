@@ -20,6 +20,15 @@ No screen-space pick, no render readback.
   9-byte prologue `55 8B EC 81 EC 74 03 00 00`). Scales `+0x7B4` to the weapon range, spread for
   multi-pellet weapons (0x42C780), world ray cast 0x5514E0(0, origin, dirSeg, 0, result) via
   `[cGameControl+0x68]` / 0x737CA0. Weapon type 5 goes through 0x4E1330 instead.
+  Per bullet (gun accuracy test, 2026-11-19): a loop over [ebp-0x150] (bullet index) up to
+  [ebp-0x14C] (data+0x1E0 pellets in mode 0, else 1); the segment is copied to [ebp-0x24], the spread
+  0x42C780 applied to it in mode 0 for every bullet of a single-pellet weapon and every bullet but
+  the first of a multi-pellet one; the cast is `call 0x5514E0` at 0x50D279 (return 0x50D27E) with
+  the result at [ebp-0xEC] (so the frame is result+0xEC). Bullets that carry on through a hit
+  recurse with mode+1 (call at 0x50D896). Seen in game: the magnum has no spread, the SMG ~1.4
+  degrees mean (2.5 max). 0x4E1330 writes the launch point (origin + its camera-space offset) back
+  through the origin pointer and into the projectile (+0x24 +4..+0xC), flies it along
+  player+0x1F0 scaled by data+0x258, and returns early (origin unchanged) without a projectile.
 - Also cursor-driven: sphere-cast pickup/target checks 0x42B900 (r 80), 0x479250 (r 160).
 - **Hook**: entry of 0x50D110 (overwrite `[ecx+0x7B4..0x7C0]` and `*origin`); also 0x4E1330 and
   the two sphere checks. 0x49E6C0 is an existing "fire in this direction" helper.

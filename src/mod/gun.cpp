@@ -25,6 +25,10 @@
 //            per-frame direction player+0x1F0, the crosshair, anything else reading the cursor)
 //            agrees with the gun.
 //
+//   0x5514E0 the world ray cast (cdecl: 0, origin*, segment*, 0, result*). Development harness only:
+//            hooked for the gun accuracy test's shot log (`vr shotlog 1`), FireBullets' call at
+//            0x50D279 (return address 0x50D27E) logged per pellet; nothing is changed.
+//
 // The hand's world ray: the gun hand in the game camera's space (vrsys_hand_in_game, the same
 // anchor transform as the eyes) through the inverse of the engine's view matrix (0x9C7E48) of the
 // last frame drawn - the frame the player aimed at.
@@ -36,7 +40,9 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <vector>
 
@@ -186,6 +192,7 @@ static bool cast_ray(const float o[3], const float d[3], float range, float hit[
 
 static std::atomic<unsigned> g_frame{1};
 void gun_frame() { ++g_frame; }
+unsigned gun_frame_no() { return g_frame.load(); }
 
 struct Aim {
     unsigned frame = 0;
@@ -442,12 +449,114 @@ static void shot_feedback(uintptr_t player) {
     }
 }
 
+// --- the gun accuracy test's shot log (dev `vr shotlog 1`; tools/gun_accuracy.py) ---
+// Lines (all `shotlog ...`, key=value, vectors as x,y,z, world positions in game units):
+//   shot   once per player-1 FireBullets call from the weapon's fire: the ray the mod set (o, d:
+//          what FireBullets got, spread-free), the barrel line hand_world_ray gave at fire time
+//          (fire_o, fire_d) and the hand pose then, and the barrel of the last frame drawn before
+//          the shot (drawn_*: gunmodel.cpp, from the world matrix the gun was drawn with) with
+//          its frame number and the rail camera's turn speed.
+//   pellet every ray cast FireBullets makes for that shot (0x5514E0, called from 0x50D279), the
+//          game's own origin, direction (after its spread) and result; `depth` = FireBullets'
+//          mode (0 the shot, 1+ its recursive calls for bullets that carry on through a hit).
+//   proj   a projectile weapon's launch (0x4E1330): the origin the game wrote back (after its own
+//          camera-space offset) and the direction it flies along (player+0x1F0 during the call).
+//   tag    `vr shotlog tag NAME`: a scenario marker; on/off: the switch, with unit_m.
+// Each FireBullets call for player 1 pushes a context (thread-local; FireBullets recurses), so
+// pellets join their shot by id.
+constexpr uintptr_t kCastRet = 0x50D27E;  // FireBullets' world ray cast (call at 0x50D279) returns here
+using RayCastHook_t = int(__cdecl*)(int, const float*, const float*, int, void*);
+static RayCastHook_t o_raycast;
+static std::atomic<bool> g_shotlog;
+static unsigned g_shot_id;  // game thread
+struct ShotCtx {
+    unsigned id;
+    uintptr_t weapon;
+};
+static thread_local ShotCtx t_ctx[16];
+static thread_local int t_ctx_n;
+
+void gun_shotlog(bool on) {
+    if (on && !o_raycast) logf("shotlog: the ray cast hook is not installed (development harness only): shots and projectiles only");
+    g_shotlog = on;
+    logf("shotlog %s frame=%u unit_m=%.5f", on ? "on" : "off", g_frame.load(), g_vr.unit_m);
+}
+bool gun_shotlog_on() { return g_shotlog; }
+void gun_shotlog_tag(const std::string& name) { logf("shotlog tag name=%s frame=%u", name.c_str(), g_frame.load()); }
+
+// The weapon's names and data for a log line: "weapon=... key=... type=... kind=... pellets=...".
+static void weapon_fields(uintptr_t weapon, char* out, size_t n) {
+    char name[64] = "?", key[16] = "?";
+    gunmodel_weapon_name(weapon, name, key);
+    const uintptr_t data = read_u32(weapon + 4);
+    uint32_t type = 0, kind = 0, pellets = 0;
+    if (data) safe_copy(&type, data + 0x20, 4), safe_copy(&kind, data + 0x24, 4), safe_copy(&pellets, data + 0x1E0, 4);
+    snprintf(out, n, "weapon=%s key=%s data=%p type=%u kind=%u pellets=%u", name, key, reinterpret_cast<void*>(data), type, kind, pellets);
+}
+
+// The fire-time barrel (hand_world_ray, if the hand aims), the hand pose then, the barrel of the
+// last frame drawn, and the rail camera's turn speed now.
+static void barrel_fields(const vr::Ray* fire, char* out, size_t n) {
+    int len = 0;
+    if (fire) len += snprintf(out + len, n - len, "fire_o=%.3f,%.3f,%.3f fire_d=%.6f,%.6f,%.6f", fire->o[0], fire->o[1], fire->o[2], fire->d[0],
+                              fire->d[1], fire->d[2]);
+    else len += snprintf(out + len, n - len, "fire_o=- fire_d=-");
+    vr::Mat4 h;
+    if (vrsys_hand_in_game(&h))
+        len += snprintf(out + len, n - len, " fire_hand=%.4f,%.4f,%.4f,%.5f,%.5f,%.5f", h.m[0][3], h.m[1][3], h.m[2][3], h.m[0][2], h.m[1][2], h.m[2][2]);
+    float turn, turn_frame;
+    comfort_rail_turn(&turn, &turn_frame);
+    len += snprintf(out + len, n - len, " fire_turn=%.1f", turn);
+    DrawnBarrel d;
+    if (gunmodel_last_drawn(&d))
+        snprintf(out + len, n - len,
+                 " drawn=1 drawn_frame=%u drawn_key=%s drawn_o=%.3f,%.3f,%.3f drawn_d=%.6f,%.6f,%.6f drawn_hand=%.4f,%.4f,%.4f,%.5f,%.5f,%.5f "
+                 "turn=%.1f turn_frame=%.1f",
+                 d.frame, d.key, d.muzzle[0], d.muzzle[1], d.muzzle[2], d.dir[0], d.dir[1], d.dir[2], d.hand[0], d.hand[1], d.hand[2], d.hand[3],
+                 d.hand[4], d.hand[5], d.turn, d.turn_frame);
+    else snprintf(out + len, n - len, " drawn=0");
+}
+
+static void log_pellet(const float* org, const float* seg, uint8_t* res, int hit) {
+    const ShotCtx& c = t_ctx[t_ctx_n - 1];
+    const uintptr_t r = reinterpret_cast<uintptr_t>(res);
+    // FireBullets' frame (its ebp = res + 0xEC): pellet index [ebp-0x150], pellet count [ebp-0x14C],
+    // mode (byte) [ebp+0xC].
+    uint32_t pellet = 0, count = 0;
+    uint8_t mode = 0;
+    safe_copy(&pellet, r - 0x64, 4), safe_copy(&count, r - 0x60, 4), safe_copy(&mode, r + 0xF8, 1);
+    const float l = std::sqrt(seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2]);
+    const float il = l > 0 ? 1 / l : 0;
+    HitInfo info;
+    float p[3] = {};
+    if (hit) memcpy(p, res, 12), seh_entity(res, &info);
+    logf("shotlog pellet id=%u frame=%u pellet=%u of=%u depth=%u o=%.3f,%.3f,%.3f d=%.6f,%.6f,%.6f len=%.1f hit=%d p=%.3f,%.3f,%.3f ent=%p shoot=%d",
+         c.id, g_frame.load(), pellet, count, unsigned(mode), org[0], org[1], org[2], seg[0] * il, seg[1] * il, seg[2] * il, l, hit ? 1 : 0, p[0],
+         p[1], p[2], reinterpret_cast<void*>(info.entity), int(info.shootable));
+}
+
+static int __cdecl hk_raycast(int a, const float* org, const float* seg, int b, void* res) {
+    const int r = o_raycast(a, org, seg, b, res);
+    if (g_shotlog && t_ctx_n > 0 && reinterpret_cast<uintptr_t>(_ReturnAddress()) == va(kCastRet) && org && seg && res)
+        log_pellet(org, seg, static_cast<uint8_t*>(res), r);
+    return r;
+}
+
 static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, float travelled) {
     auto w = static_cast<uint8_t*>(self);
     auto dir = reinterpret_cast<float*>(w + 0x7B4);
     const uintptr_t owner = read_u32(reinterpret_cast<uintptr_t>(w + 0x794)), p1 = player1();
     const bool player_shot = (mode & 0xFF) == 0 && owner && owner == p1 &&
                              reinterpret_cast<uintptr_t>(_ReturnAddress()) == va(kFireRet);
+    // Shot log: a new shot, or a bullet carrying on (FireBullets' recursion) inside a logged one.
+    bool shotlog = false;
+    unsigned shot_id = 0;
+    if (g_shotlog && owner && owner == p1 && t_ctx_n < int(std::size(t_ctx))) {
+        if (player_shot) shotlog = true, shot_id = ++g_shot_id;
+        else if (t_ctx_n > 0) shotlog = true, shot_id = t_ctx[t_ctx_n - 1].id;
+    }
+    bool fire_ok = false;
+    vr::Ray fire_ray{};
     alignas(16) float own[4] = {origin[0], origin[1], origin[2], origin[3]};
     float* use_origin = origin;
     static int logged;
@@ -472,6 +581,7 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
         }
         for (int i = 0; i < 3; ++i) dir[i] = r.d[i] * len, own[i] = r.o[i];
         use_origin = own;
+        fire_ok = true, fire_ray = r;
     } else if (logged < 400) {
         logf("FireBullets weapon=%p mode=%d travelled=%g origin %.1f %.1f %.1f dir %.4f %.4f %.4f (%s)", self, mode & 0xFF, travelled,
              origin[0], origin[1], origin[2], dir[0], dir[1], dir[2], player_shot ? "player 1, mouse aim" : "not overridden");
@@ -498,7 +608,18 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
         }
     }
     if (player_shot) shot_feedback(owner);
+    if (shotlog && player_shot) {
+        char wf[160], bf[640];
+        weapon_fields(reinterpret_cast<uintptr_t>(self), wf, sizeof wf);
+        barrel_fields(fire_ok ? &fire_ray : nullptr, bf, sizeof bf);
+        const float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]), in = n > 0 ? 1 / n : 0;
+        logf("shotlog shot id=%u frame=%u %s range=%.0f aim=%s o=%.3f,%.3f,%.3f d=%.6f,%.6f,%.6f %s", shot_id, g_frame.load(), wf,
+             weapon_range(owner), fire_ok ? "hand" : "mouse", use_origin[0], use_origin[1], use_origin[2], dir[0] * in, dir[1] * in, dir[2] * in,
+             bf);
+    }
+    if (shotlog) t_ctx[t_ctx_n++] = {shot_id, reinterpret_cast<uintptr_t>(self)};
     o_fire(self, edx, use_origin, mode, travelled);
+    if (shotlog) --t_ctx_n;
 }
 
 // The camera-space offset 0x4E1330 adds to a projectile's origin, as the game computes it.
@@ -519,6 +640,23 @@ static bool seh_proj_offset(float out[4]) {
     }
 }
 
+// Shot log: a projectile's launch. 0x4E1330 writes the launch point (origin + its offset) back
+// through the origin pointer and into the projectile, and launches it along player+0x1F0 at the
+// weapon's speed (data+0x258); when it has no projectile to launch it returns early and the
+// origin is unchanged (`launched=0`). Where it lands is not logged (no collision hook).
+static void log_projectile(uintptr_t weapon, const float* launch, const float before[3], const float* dir, const vr::Ray* fire) {
+    char wf[160], bf[640];
+    weapon_fields(weapon, wf, sizeof wf);
+    barrel_fields(fire, bf, sizeof bf);
+    float speed = 0;
+    const uintptr_t data = read_u32(weapon + 4);
+    if (data) safe_copy(&speed, data + 0x258, 4);
+    const bool launched = launch[0] != before[0] || launch[1] != before[1] || launch[2] != before[2];
+    const float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]), in = n > 0 ? 1 / n : 0;
+    logf("shotlog proj id=%u frame=%u %s aim=%s launched=%d speed=%.1f o=%.3f,%.3f,%.3f d=%.6f,%.6f,%.6f %s", ++g_shot_id, g_frame.load(), wf,
+         fire ? "hand" : "mouse", int(launched), speed, launch[0], launch[1], launch[2], dir[0] * in, dir[1] * in, dir[2] * in, bf);
+}
+
 static void __fastcall hk_fire_proj(void* self, void* edx, float* origin) {
     auto w = static_cast<uint8_t*>(self);
     const uintptr_t owner = read_u32(reinterpret_cast<uintptr_t>(w + 0x794));
@@ -533,11 +671,16 @@ static void __fastcall hk_fire_proj(void* self, void* edx, float* origin) {
         logf("shot (projectile): hand origin %.1f %.1f %.1f dir %.4f %.4f %.4f (offset %.1f %.1f %.1f)", r.o[0], r.o[1], r.o[2], r.d[0],
              r.d[1], r.d[2], off[0], off[1], off[2]);
         shot_feedback(owner);
+        const float before[3] = {own[0], own[1], own[2]};
         o_fire_proj(self, edx, own);
+        if (g_shotlog) log_projectile(reinterpret_cast<uintptr_t>(self), own, before, pdir, &r);
         memcpy(pdir, saved, 12);
         return;
     }
+    const float before[3] = {origin[0], origin[1], origin[2]};
     o_fire_proj(self, edx, origin);
+    if (g_shotlog && owner && owner == player1())
+        log_projectile(reinterpret_cast<uintptr_t>(self), origin, before, reinterpret_cast<float*>(owner + 0x1F0), nullptr);
 }
 
 // Sphere checks: the cursor and aim origin moved onto the hand's ray for the call.
@@ -660,6 +803,12 @@ void install_gun_hooks() {
     static const uint8_t sphere_b[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x78};
     static const uint8_t setter[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08};
     o_fire = reinterpret_cast<Fire_t>(install_detour(0x50D110, fire, sizeof fire, reinterpret_cast<void*>(hk_fire), "FireBullets 0x50D110"));
+    // The gun accuracy test's per-bullet log (`vr shotlog 1`): the world ray cast, development
+    // harness only (a release install never hooks it). Off, it only passes the call on.
+    static const uint8_t cast[9] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xD4, 0x01, 0x00, 0x00};
+    if (dev_harness())
+        o_raycast = reinterpret_cast<RayCastHook_t>(
+            install_detour(0x5514E0, cast, sizeof cast, reinterpret_cast<void*>(hk_raycast), "world ray cast 0x5514E0 (shot log)"));
     if (g_vr.mode == VrMode::off) return;  // mode=off: only the probe's logging FireBullets hook
     o_fire_proj = reinterpret_cast<FireProj_t>(
         install_detour(0x4E1330, proj, sizeof proj, reinterpret_cast<void*>(hk_fire_proj), "projectile shot 0x4E1330"));

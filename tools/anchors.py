@@ -65,15 +65,18 @@ SPEC = [
     ("detour", "camera shake (and its global 0x9B01A8)", 0x4BF210, 8, None),
     ("detour", "camera smack", 0x529CA0, 6, None),
     ("detour", "wiiview edge-pan", 0x55F5C0, 7, None),
+    # Also called by gun.cpp; detoured in the development harness only (the shot log).
+    ("detour", "world ray cast", 0x5514E0, 9, None),
     # Game functions the mod calls (gun.cpp).
     ("call", "ScreenToWorld", 0x655620, 6, None),
     ("call", "ray result init", 0x4D6830, 6, None),
-    ("call", "world ray cast", 0x5514E0, 6, None),
     ("call", "ray result entity", 0x48C8D0, 6, None),
     ("call", "quaternion to matrix", 0x6A44A0, 6, None),
     ("call", "matrix times vector", 0x6A2A50, 6, None),
     # FireBullets' return address in the weapon's fire (gun.cpp kFireRet 0x52B164).
     ("retaddr", "weapon fire calls FireBullets", 0x52B15F, "1i", 0x52B164),
+    # FireBullets' world ray cast per pellet (gun.cpp kCastRet 0x50D27E; the shot log).
+    ("retaddr", "FireBullets calls the world ray cast", 0x50D279, "1i", 0x50D27E),
     # Globals (engine.cpp, gamestate.cpp, gun.cpp, gunmodel.cpp, stereo.cpp, comfort.cpp).
     ("global", "app object, fps limit flag +0x48 (main loop)", 0x6FDF8D, "2i", 0x9F09E0),
     ("global", "cGameControl (input actions)", 0x426C98, "1i", 0x99B708),

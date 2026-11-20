@@ -139,6 +139,9 @@ void comfort_allow_wiiview(bool on);
 void comfort_rail_frame(const vr::Mat4& view);  // stereo.cpp: once per stereo frame, the frame's game view
 vr::Mat4 comfort_rail_delta();   // camera-space rotation applied to the eyes and the gun hand (vrsys.cpp)
 float comfort_vignette_now();    // vignette strength to draw this frame (0..1)
+// The rail camera's turn speed, deg/s: smoothed over ~100 ms (as the vignette sees it) and this
+// stereo frame's own (0 on a camera cut).
+void comfort_rail_turn(float* smoothed_dps, float* frame_dps);
 void comfort_command(const std::string& sub, const std::vector<std::string>& args);  // `vr comfort SUB ...`
 void comfort_log_settings(const char* why);
 void comfort_log_now(const char* why);  // the rail camera's speeds, the vignette and the smoothing lag now  // dev: let the game's edge-pan answer through (to compare)  // dev: log each actor drawn through the entity draw (once per actor)
@@ -160,6 +163,12 @@ void gun_log_actions(bool on);  // dev: log the game's input action values as th
 void gun_set_god(bool on);  // dev: keep player 1's health full (tests that need time in gameplay)
 void gun_request_measure();
 int gun_hits();             // player 1's health drops seen so far (dev `vr waithit`)  // dev `vr measure`: world-scale ray casts (next game frame)
+unsigned gun_frame_no();    // the frame counter gun_frame() advances (once per Present)
+// Gun accuracy test (dev `vr shotlog 0|1`, `vr shotlog tag NAME`): one `shotlog` line per player-1
+// shot, per bullet ray cast and per projectile launch; tools/gun_accuracy.py reads them.
+void gun_shotlog(bool on);
+bool gun_shotlog_on();
+void gun_shotlog_tag(const std::string& name);
 
 // The weapon model (gunmodel.cpp).
 void gunmodel_load_config();  // per-weapon [vr] keys: show_, clip_, grip_, barrel_, muzzle_, hold_<weapon>
@@ -174,6 +183,19 @@ void gunmodel_enable(bool on);
 void gunmodel_force_clip(float out);  // dev: magazine out fraction (-1: from the reload state)
 void gunmodel_barrel_line(bool on);   // dev: draw the barrel line to the aim point
 void gunmodel_set(const std::string& key, const std::string& field, const float* v, int n);  // `vr gunset`
+// The gun accuracy test: the barrel of a frame the gun was drawn in (shot log on), from the world
+// matrix it was drawn with.
+struct DrawnBarrel {
+    unsigned frame = 0;          // gun_frame_no() when drawn
+    float muzzle[3] = {}, dir[3] = {};  // world (game units), dir unit
+    float hand[6] = {};          // the hand pose drawn with: position (m) and pointing axis, camera space (LH)
+    float turn = 0, turn_frame = 0;  // the rail camera's turn speed, deg/s (smoothed, this frame)
+    char key[16] = {};           // the weapon (kDefs key)
+};
+bool gunmodel_last_drawn(DrawnBarrel* out);  // the last frame drawn (false: none since the shot log went on)
+// The weapon's model name (GunArms_...) and kDefs key, if its model was resolved.
+bool gunmodel_weapon_name(uintptr_t weapon, char name[64], char key[16]);
+void gunmodel_meshcheck();  // dev `vr gunmeshcheck`: the current weapon's live mesh against its kDefs description
 
 // Controller input (vrinput.cpp): buttons -> the game's DirectInput, menu pointing, haptics.
 enum CtlButton : uint32_t { kBtnTrigger = 1, kBtnA = 2, kBtnB = 4, kBtnGrip = 8, kBtnStick = 16 };

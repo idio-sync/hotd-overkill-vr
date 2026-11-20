@@ -42,6 +42,7 @@ add_library(hovr SHARED
     src/vr/xform.cpp
     src/vr/aim.cpp
     src/vr/gunpose.cpp
+    src/vr/gunfit.cpp
     src/vr/settings_file.cpp
     src/vr/comfort.cpp
     src/vr/exe_anchors.cpp)
@@ -67,7 +68,7 @@ add_custom_command(TARGET hovr POST_BUILD
 # Unit tests for the VR math (no game needed): ctest --test-dir out
 enable_testing()
 add_executable(hovr_tests tests/test_stereo.cpp src/vr/stereo.cpp src/vr/xform.cpp src/vr/aim.cpp src/vr/gunpose.cpp
-    src/vr/settings_file.cpp src/vr/comfort.cpp)
+    src/vr/gunfit.cpp src/vr/settings_file.cpp src/vr/comfort.cpp)
 target_include_directories(hovr_tests PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_compile_options(hovr_tests PRIVATE /W4 /utf-8)
 add_test(NAME stereo COMMAND hovr_tests)

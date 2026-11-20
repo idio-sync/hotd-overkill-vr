@@ -338,6 +338,12 @@ float comfort_vignette_now() {
     return g_rail_vignette;
 }
 
+void comfort_rail_turn(float* smoothed_dps, float* frame_dps) {
+    std::lock_guard lock(g_rail_mx);
+    *smoothed_dps = g_rail.turn_dps();
+    *frame_dps = g_rail.raw_turn_dps();
+}
+
 void comfort_log_now(const char* why) {
     std::lock_guard lock(g_rail_mx);
     logf("%s: rail turn %.0f deg/s, move %.2f m/s, vignette %.2f, smoothing lag %.1f deg%s", why, g_rail.turn_dps(), g_rail.move_mps(),

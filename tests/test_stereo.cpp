@@ -6,10 +6,12 @@
 #include <initializer_list>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "../src/vr/stereo.h"
 #include "../src/vr/aim.h"
 #include "../src/vr/comfort.h"
+#include "../src/vr/gunfit.h"
 #include "../src/vr/gunpose.h"
 #include "../src/vr/xform.h"
 #include "../src/vr/harness.h"
@@ -1003,7 +1005,118 @@ static void test_comfort_aim_matches_eyes() {
     }
 }
 
+// The mesh check's bore fit (src/vr/gunfit.h) on a synthetic gun: a barrel (outer circle r 1.2,
+// bore r 0.45, chamfer rings at the muzzle) along model +x from x = -2 to 10, a front sight block on
+// top at the muzzle, a box frame behind, and a revolver cylinder (round, but 2.2 below the bore);
+// the whole mesh turned by yaw 3 / pitch -2 degrees and moved. The hint is plain +x.
+static void test_bore_fit() {
+    std::vector<float> v;  // x, y, z per vertex, model space before the pose
+    auto ring = [&](float x, float cy, float r, int segs, float phase) {
+        for (int k = 0; k < segs; ++k) {
+            const float a = phase + 2 * kPi * float(k) / float(segs);
+            v.insert(v.end(), {x, cy + r * std::cos(a), r * std::sin(a)});
+            v.insert(v.end(), {x, cy + r * std::cos(a), r * std::sin(a)});  // duplicate (another normal)
+        }
+    };
+    for (float x : {-2.f, 2.f, 6.f, 9.6f, 10.f}) ring(x, 0, 1.2f, 16, 0.1f);
+    ring(10.f, 0, 0.45f, 8, 0.3f);   // the bore at the muzzle face
+    ring(9.8f, 0, 0.6f, 12, 0.0f);   // chamfer
+    ring(4.f, 0, 0.45f, 8, 0.3f);    // the bore further in
+    for (float x : {-1.f, -4.f}) ring(x, -2.2f, 1.5f, 12, 0);  // cylinder: round, off the bore axis
+    for (float x : {9.0f, 10.0f})  // front sight block
+        for (float y : {1.15f, 1.9f})
+            for (float z : {-0.15f, 0.15f}) v.insert(v.end(), {x, y, z});
+    for (float x : {-8.f, -3.f})  // frame
+        for (float y : {-4.f, 1.f})
+            for (float z : {-1.f, 1.f}) v.insert(v.end(), {x, y, z});
+    const float yaw = 3 * kPi / 180, pitch = -2 * kPi / 180, off[3] = {23.f, 8.f, -0.9f};
+    // Pose: pitch about z (x towards y), then yaw about y (x towards -z).
+    auto pose = [&](const float p[3], float out[3]) {
+        const float x1 = p[0] * std::cos(pitch) - p[1] * std::sin(pitch), y1 = p[0] * std::sin(pitch) + p[1] * std::cos(pitch), z1 = p[2];
+        out[0] = x1 * std::cos(yaw) + z1 * std::sin(yaw) + off[0];
+        out[1] = y1 + off[1];
+        out[2] = -x1 * std::sin(yaw) + z1 * std::cos(yaw) + off[2];
+    };
+    std::vector<float> posed(v.size());
+    for (size_t i = 0; i < v.size(); i += 3) pose(&v[i], &posed[i]);
+    const float hint[3] = {1, 0, 0};
+    const BoreFit f = fit_bore(posed.data(), posed.size() / 3, 3, hint);
+    CHECK(f.axis_ok);
+    CHECK(f.muzzle_ok);
+    float true_dir[3], o[3], m[3];
+    const float zero[3] = {0, 0, 0}, ten[3] = {10, 0, 0};
+    pose(ten, m), pose(zero, o);
+    for (int i = 0; i < 3; ++i) true_dir[i] = (m[i] - o[i]) / 10;
+    float ang, perp, along;
+    compare_bore(f, true_dir, m, &ang, &perp, &along);
+    CHECK_NEAR(ang, 0, 0.01);
+    CHECK_NEAR(perp, 0, 0.01);
+    CHECK_NEAR(along, 0, 0.01);
+    CHECK_NEAR(f.radius, 1.2, 0.01);
+    CHECK(f.rings >= 4);
+    CHECK(f.rings_round > f.rings);  // the cylinder's rings were round but dropped
+    // A description 1 degree off and with its muzzle 0.5 up is reported as such.
+    float side[3] = {true_dir[1], -true_dir[0], 0};  // across the barrel (true_dir x +z)
+    const float sn = std::sqrt(side[0] * side[0] + side[1] * side[1]);
+    float d1[3];
+    for (int i = 0; i < 3; ++i) d1[i] = std::cos(kPi / 180) * true_dir[i] + std::sin(kPi / 180) * side[i] / sn;
+    const float m1[3] = {m[0] + 0.5f * side[0] / sn, m[1] + 0.5f * side[1] / sn, m[2]};
+    compare_bore(f, d1, m1, &ang, &perp, &along);
+    CHECK_NEAR(ang, 1, 0.01);
+    CHECK_NEAR(perp, 0.5, 0.01);
+    CHECK_NEAR(along, 0, 0.01);
+    CHECK(std::string(f.method) == "rings");
+    // Nothing round: no axis, and a reason.
+    const float flat[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1};
+    const BoreFit g = fit_bore(flat, 6, 3, hint);
+    CHECK(!g.axis_ok && !g.muzzle_ok && g.why[0]);
+
+    // A slide pistol (as the magnum): the only round part is the bore's ring at the muzzle face
+    // (r 0.7 around y 9.4); the slide is a box with its long edges along the barrel, here turned
+    // 1 degree up. The axis comes from the edges, through the ring's centre.
+    {
+        std::vector<float> s;
+        const float pitch1 = kPi / 180;
+        auto put = [&](float x, float y, float z) {  // turned about the bore's centre at the muzzle face
+            const float dx = x - 23.4f, dy = y - 9.4f;
+            s.insert(s.end(), {23.4f + dx * std::cos(pitch1) - dy * std::sin(pitch1), 9.4f + dx * std::sin(pitch1) + dy * std::cos(pitch1), z});
+        };
+        for (int k = 0; k < 8; ++k) put(23.4f, 9.4f + 0.7f * std::cos(2 * kPi * k / 8), -0.87f + 0.7f * std::sin(2 * kPi * k / 8));
+        for (float x : {10.f, 13.f, 16.f, 19.f, 23.4f})
+            for (float y : {7.6f, 10.4f, 11.5f})
+                for (float z : {-2.4f, 0.7f}) put(x, y, z);
+        const BoreFit e = fit_bore(s.data(), s.size() / 3, 3, hint);
+        CHECK(e.axis_ok);
+        CHECK(std::string(e.method) == "edges");
+        CHECK_NEAR(std::atan2(e.dir[1], e.dir[0]) * 180 / kPi, 1.0, 0.01);
+        const float d0[3] = {1, 0, 0}, m0[3] = {23.4f, 8.4f, -0.87f};
+        compare_bore(e, d0, m0, &ang, &perp, &along);
+        CHECK_NEAR(ang, 1.0, 0.01);
+        CHECK_NEAR(perp, 1.0, 0.01);  // the description's muzzle 1 below the bore
+    }
+    // An SMG-like barrel (r 0.68 at x 24.5 and 28.3, axis y 11.5) with a nut (r 1.85) at x 24.5
+    // whose centre is 0.1 higher: the nut must not tilt the axis.
+    {
+        std::vector<float> s;
+        auto circle = [&](float x, float cy, float r, int segs) {
+            for (int k = 0; k < segs; ++k) s.insert(s.end(), {x, cy + r * std::cos(2 * kPi * k / segs), -0.72f + r * std::sin(2 * kPi * k / segs)});
+        };
+        circle(24.48f, 11.5f, 0.68f, 8);
+        circle(28.33f, 11.5f, 0.68f, 8);
+        circle(24.51f, 11.6f, 1.85f, 12);
+        const BoreFit e = fit_bore(s.data(), s.size() / 3, 3, hint);
+        CHECK(e.axis_ok);
+        CHECK(std::string(e.method) == "rings");
+        const float d0[3] = {1, 0, 0}, m0[3] = {28.33f, 11.5f, -0.72f};
+        compare_bore(e, d0, m0, &ang, &perp, &along);
+        CHECK_NEAR(ang, 0, 0.01);
+        CHECK_NEAR(perp, 0, 0.01);
+        CHECK_NEAR(along, 0, 0.01);
+    }
+}
+
 int main() {
+    test_bore_fit();
     test_comfort_quaternions();
     test_comfort_levelling();
     test_comfort_smoothing_step();
