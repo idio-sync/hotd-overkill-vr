@@ -46,6 +46,7 @@ MESH_MAX_DEG = 0.5
 MESH_MAX_CM = 0.5
 TURN_BINS = [(0, 30), (30, 100), (100, 300), (300, float("inf"))]
 MAX_LAG = 3  # frames between the shot and the last frame the gun was drawn; more: not measured
+MIN_DIST_M = 0.3  # bullets hitting closer than this to the drawn muzzle are not measured
 
 LINE = re.compile(r"shotlog (\w+)\s*(.*)$")
 TOKEN = re.compile(r'(\w+)=("[^"]*"|\S*)')
@@ -161,6 +162,10 @@ def measure_shot(s):
     um = s["unit_m"] * 100  # cm per game unit
     lines = {"drawn": (vec(s["drawn_o"]), unit(vec(s["drawn_d"]))), "fire": (vec(s["fire_o"]), unit(vec(s["fire_d"])))}
     bullets = [p for p in s["pellets_list"] if p.get("depth") == "0"]
+    # A hit closer than MIN_DIST_M to the drawn muzzle (a zombie at the gun) has no usable angle.
+    dm0 = vec(s["drawn_o"])
+    if dm0:
+        bullets = [p for p in bullets if p.get("hit") != "1" or norm(sub(vec(p["p"]), dm0)) * s["unit_m"] >= MIN_DIST_M]
     out = {"turn": float(s.get("turn", 0)), "lag": int(s["frame"]) - int(s["drawn_frame"]), "n": len(bullets),
            "hits": sum(1 for p in bullets if p.get("hit") == "1"), "through": len(s["pellets_list"]) - len(bullets),
            "pellets_per_shot": int(s.get("pellets", "1") or 1),
@@ -322,7 +327,7 @@ def report(shots, projs, meshes, overrides):
             ang, perp, dist, launched = [], [], [], 0
             for p in ps:
                 launched += p.get("launched") == "1"
-                if p.get("aim") != "hand" or p.get("drawn") != "1":
+                if p.get("aim") != "hand" or p.get("drawn") != "1" or int(p["frame"]) - int(p["drawn_frame"]) > MAX_LAG:
                     continue
                 mo, md = vec(p["drawn_o"]), unit(vec(p["drawn_d"]))
                 o, d = vec(p["o"]), unit(vec(p["d"]))
@@ -407,7 +412,8 @@ def summary(shots, projs, meshes):
     w("Summary: bullets against the barrel as drawn in the frame on screen (deg; cm = the bias at the median impact distance)")
     w("still: still* tags, rail and hand < 30 deg/s; turn: rail >= 30 deg/s (any tag but sweep*); sweepN: hand sweeping, "
       "rail < 30 deg/s; ctr = each shot's bullets' mean direction against the drawn barrel, mean/p95; first pellet = a "
-      "multi-pellet weapon's unspread first pellet against the drawn barrel (bias +- 2se, max)")
+      "multi-pellet weapon's unspread first pellet against the drawn barrel (bias +- 2se, max); mod's ray = the spread-free "
+      "ray the mod set, carried to each impact distance, against the drawn barrel")
     w("%-12s %-9s %5s %7s %7s %6s %7s %11s %7s %13s %11s %8s  %s" % (
         "weapon", "scenario", "shots", "bullets", "bias", "+-2se", "bias_cm", "ctr m/p95", "dist_m", "spread m/p95", "rail/hand", "hits", "verdict"))
     for wp in weapons:
@@ -420,6 +426,13 @@ def summary(shots, projs, meshes):
             md = median(dist)
             gs = stats([a for r in rs for a in r["game_spread"]])
             verdict = still_verdict(b, se2) if sc == "still" else ""
+            st = [r["set"] for r in rs if "set" in r]
+            if st and (gs and gs[1] > 0.01):  # the game spreads this weapon's bullets: the mod's own ray decides
+                sb = mean_bias(st)
+                verdict = ("%s; " % verdict if verdict else "") + "mod's ray %.3f +- %.3f, ctr max %.3f" % (
+                    sb[2], sb[3] if sb[3] != float("inf") else 0, max(x["centre"] for x in st))
+                if sc == "still":
+                    verdict += " (%s)" % still_verdict(sb[2], sb[3])
             if sc.startswith("sweep") and sc[5:].isdigit():
                 hd = [r["hand_df"] for r in rs if r["hand_df"] > 0.1]
                 if hd:
@@ -453,6 +466,8 @@ def summary(shots, projs, meshes):
         pg = {}
         for p in projs:
             if p.get("aim") != "hand" or p.get("drawn") != "1" or p.get("launched") != "1":
+                continue
+            if int(p["frame"]) - int(p["drawn_frame"]) > MAX_LAG:
                 continue
             sc = scenario_of(p["tag"], float(p.get("turn", 0)), float(p.get("hand_turn", 0) or 0))
             if sc:
@@ -587,7 +602,7 @@ def selftest():
     still_row = [l for l in sm.splitlines() if l.startswith("magnum") and " still " in l]
     turn_row = [l for l in sm.splitlines() if l.startswith("magnum") and " turn " in l]
     sweep_row = [l for l in sm.splitlines() if l.startswith("magnum") and " sweep60 " in l]
-    check(len(still_row) == 1 and " 0.100 " in still_row[0] and still_row[0].rstrip().endswith("PASS"), "summary still row")
+    check(len(still_row) == 1 and " 0.100 " in still_row[0] and still_row[0].rstrip().endswith(("PASS", "(PASS)")), "summary still row")
     check(len(turn_row) == 1 and " 2.000 " in turn_row[0], "summary turn row")
     check(len(sweep_row) == 1 and " 0.500 " in sweep_row[0] and " 0/120 " in sweep_row[0], "summary sweep row")
     check("100-300: 10 shots 2.000 deg" in sm, "summary turn bins")

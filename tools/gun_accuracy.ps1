@@ -87,7 +87,7 @@ $styles = @{
     autoshotgun = @{ kind = 'semi'; ms = 250; mag = 8 }
     crossbow    = @{ kind = 'semi'; ms = 700; mag = 5 }
     smg         = @{ kind = 'auto'; ms = 2000 }
-    rifle       = @{ kind = 'auto'; ms = 2000 }
+    rifle       = @{ kind = 'semi'; ms = 350; mag = 10 }  # a 3-round burst per pull
     minigun     = @{ kind = 'auto'; ms = 3000 }
 }
 $reload = @('fakevr release R trigger', 'fakevr btn R a 150', 'wait 1800')
