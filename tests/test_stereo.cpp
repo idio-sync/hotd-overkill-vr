@@ -1,6 +1,7 @@
 // Unit tests for src/vr/stereo (no game, no D3D). Run: ctest --test-dir out
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -11,6 +12,7 @@
 #include "../src/vr/stereo.h"
 #include "../src/vr/aim.h"
 #include "../src/vr/comfort.h"
+#include "../src/vr/gunfeedback.h"
 #include "../src/vr/gunfit.h"
 #include "../src/vr/gunparts.h"
 #include "../src/vr/gunpose.h"
@@ -893,6 +895,189 @@ static void test_crossbow_string_bends_straight() {
     }
 }
 
+// --- gun feedback stage 2: recoil, muzzle flash, haptic patterns (src/vr/gunfeedback.h) ---
+
+static void test_recoil_kick_and_cap() {
+    // One kick: 0 at the shot, its peak (1) at tau, back under 4% by 100 ms for the magnum.
+    const FeedbackDef& mag = feedback_def("magnum");
+    CHECK_NEAR(recoil_kick(0, mag.recoil_tau), 0, 1e-6);
+    CHECK_NEAR(recoil_kick(mag.recoil_tau, mag.recoil_tau), 1, 1e-6);
+    CHECK(recoil_kick(0.1f, mag.recoil_tau) < 0.04f);
+    CHECK_NEAR(recoil_kick(-0.001f, mag.recoil_tau), 0, 0);
+    CHECK_NEAR(recoil_kick(1.f, mag.recoil_tau), 0, 0);
+    float prev = 0;
+    for (int i = 0; i <= 16; ++i) {
+        const float k = recoil_kick(i * 0.001f, 0.016f);
+        CHECK(k >= prev);
+        prev = k;
+    }
+    for (int i = 17; i <= 200; ++i) {
+        const float k = recoil_kick(i * 0.001f, 0.016f);
+        CHECK(k <= prev);
+        prev = k;
+    }
+    // A single shot is unchanged by the cap; overlapping kicks never pass it.
+    const float one = 0.016f;
+    CHECK_NEAR(recoil_amount(&one, 1, 0.016f, 1.3f), 1, 1e-6);
+    // Automatic fire (the minigun: ~40 shots a second for 3 s): the kick stays bounded and settles.
+    const FeedbackDef& mini = feedback_def("minigun");
+    float peak = 0, low_late = 1e9f;
+    for (int f = 0; f < 360; ++f) {  // 120 Hz frames
+        const float t = f / 120.f;
+        float since[8];
+        int n = 0;
+        for (int s = int(t / 0.025f); s >= 0 && n < 8; --s) since[n++] = t - s * 0.025f;
+        const float a = recoil_amount(since, n, mini.recoil_tau, mini.recoil_cap);
+        CHECK(a <= mini.recoil_cap + 1e-5f);
+        peak = std::fmax(peak, a);
+        if (t > 1) low_late = std::fmin(low_late, a);
+    }
+    CHECK(peak > 1 && low_late > 0.3f);
+    // Every weapon: recoil within sensible bounds, the strongest the hand cannon and the pump.
+    for (int i = 0; i < feedback_count(); ++i) {
+        const FeedbackDef& d = feedback_at(i);
+        CHECK(d.recoil_deg >= 0.5f && d.recoil_deg <= 8 && d.recoil_cm > 0 && d.recoil_cm <= 3.5f && d.recoil_tau > 0.005f && d.recoil_cap >= 1);
+        CHECK(d.recoil_deg <= feedback_def("pump").recoil_deg + 1e-6f || !std::strcmp(d.key, "handcannon"));
+    }
+    CHECK(!std::strcmp(feedback_def("nope").key, "magnum") && !std::strcmp(feedback_def(nullptr).key, "magnum"));
+}
+
+static void test_recoil_lifts_about_the_grip() {
+    // Magnum in the gun frame: grip 8.4 cm below the bore and 23.4 cm behind the muzzle.
+    const float grip[3] = {0, -0.084f, -0.234f};
+    const Mat4 r = recoil_in_gun(grip, 4, 0.015f);
+    // The grip point only moves back by the kick's distance.
+    const Vec4 g = apply(r, {grip[0], grip[1], grip[2], 1});
+    CHECK_NEAR(g.x, 0, 1e-6);
+    CHECK_NEAR(g.y, grip[1], 1e-6);
+    CHECK_NEAR(g.z, grip[2] - 0.015f, 1e-6);
+    // The muzzle rises; the barrel tilts up by 4 degrees and stays in its vertical plane.
+    const Vec4 m = apply(r, {0, 0, 0, 1});
+    CHECK(m.y > 0.01f);
+    CHECK_NEAR(m.x, 0, 1e-6);
+    const Vec4 d = apply(r, {0, 0, 1, 0});
+    CHECK_NEAR(std::atan2(d.y, d.z) * 180 / kPi, 4, 1e-4);
+    CHECK_NEAR(d.x, 0, 1e-6);
+    // No kick: identity.
+    CHECK(max_abs_diff(recoil_in_gun(grip, 0, 0), identity()) < 1e-6f);
+}
+
+static void test_flash_two_frames() {
+    const FeedbackDef& mag = feedback_def("magnum");
+    FlashState s;
+    s.shot = 5;  // shots before the gun was first drawn don't flash
+    CHECK(!flash_step(&s, 5, mag).on);
+    // A shot: this frame and the next, never the third.
+    FlashFrame a = flash_step(&s, 6, mag), b = flash_step(&s, 6, mag), c = flash_step(&s, 6, mag);
+    CHECK(a.on && a.frame == 0 && a.intensity == 1);
+    CHECK(b.on && b.frame == 1 && b.intensity > 0 && b.intensity < 1);
+    CHECK(!c.on);
+    for (int i = 0; i < 20; ++i) CHECK(!flash_step(&s, 6, mag).on);
+    // Same random turn in both frames of a shot (one flash), another one for the next shot.
+    CHECK_NEAR(a.rot_deg, b.rot_deg, 1e-6);
+    const FlashFrame n = flash_step(&s, 7, mag);
+    CHECK(n.on && n.frame == 0 && std::fabs(n.rot_deg - a.rot_deg) > 1e-3f);
+    // Automatic fire: a shot every frame or two always flashes; a shot during a flash restarts it.
+    const FeedbackDef& smg = feedback_def("smg");
+    FlashState q;
+    unsigned shots = 0;
+    int lit = 0;
+    float last_rot = -1;
+    for (int f = 0; f < 120; ++f) {
+        if (f % 3 == 0) ++shots;  // ~40 shots a second at 120 Hz: the minigun's rate
+        const FlashFrame ff = flash_step(&q, shots, smg);
+        if (f % 3 == 2) CHECK(!ff.on);
+        else CHECK(ff.on);
+        if (ff.on) {
+            ++lit;
+            CHECK(ff.rot_deg != last_rot);  // flickers: never the same star twice in a row
+            last_rot = ff.rot_deg;
+        }
+        CHECK(ff.scale > 0.5f || !ff.on);
+    }
+    CHECK(lit == 80);
+    // No flash for the crossbow.
+    FlashState x;
+    CHECK(!flash_step(&x, 1, feedback_def("crossbow")).on);
+    // Sizes: shotguns and the hand cannon big, pistols and rifle medium, SMG/minigun small.
+    CHECK(feedback_def("pump").flash_cm > feedback_def("magnum").flash_cm && feedback_def("handcannon").flash_cm > feedback_def("rifle").flash_cm);
+    CHECK(feedback_def("magnum").flash_cm > feedback_def("smg").flash_cm && feedback_def("smg").flicker && feedback_def("minigun").flicker);
+}
+
+static void test_flash_images() {
+    const std::vector<uint32_t> star = flash_star_image(64), plume = flash_plume_image(64, 32);
+    CHECK(star.size() == 64 * 64 && plume.size() == 64 * 32);
+    auto lum = [](uint32_t p) { return int((p >> 16) & 255) + int((p >> 8) & 255) + int(p & 255); };
+    // White-hot centre, black corners and edges (nothing to see at the quad's border).
+    CHECK(lum(star[32 * 64 + 32]) > 700);
+    for (int i = 0; i < 64; ++i) CHECK(lum(star[i]) < 8 && lum(star[i * 64]) < 8 && lum(star[63 * 64 + i]) < 8);
+    CHECK(lum(plume[16 * 64 + 6]) > 300);   // bright near the muzzle end
+    CHECK(lum(plume[16 * 64 + 63]) < 30);   // gone at the far end
+    CHECK(lum(plume[0 * 64 + 20]) < 30);    // and at the sides
+}
+
+// The pulses a pattern gives at a frame rate: {frame, us} for each frame with a pulse.
+static std::vector<std::pair<int, unsigned>> pulses(Haptic h, float hz, float scale, int frames = 40) {
+    HapticPlayer p;
+    p.play(h, 1.0);
+    std::vector<std::pair<int, unsigned>> out;
+    for (int f = 0; f < frames; ++f)
+        if (unsigned us = p.tick(1.0 + f / hz, scale)) out.push_back({f, us});
+    return out;
+}
+
+static void test_haptic_patterns() {
+    // Pistol at 120 Hz: a strong thump (3 frames of 3999 us), a short tail, then nothing.
+    auto ps = pulses(Haptic::pistol, 120, 1);
+    CHECK(ps.size() == 5);
+    CHECK(ps.size() >= 3 && ps[0].first == 0 && ps[0].second == 3999 && ps[1].second == 3999 && ps[2].second == 3999);
+    CHECK(ps.size() == 5 && ps[3].second < 3999 && ps[4].first == 4);
+    // Shotgun: two thumps with a gap of empty frames between them.
+    auto sg = pulses(Haptic::shotgun, 120, 1);
+    int gaps = 0;
+    for (size_t i = 1; i < sg.size(); ++i)
+        if (sg[i].first - sg[i - 1].first > 1) ++gaps;
+    CHECK(gaps == 1 && sg.size() >= 6 && sg.back().first * 1000 / 120 >= 80);
+    // At 90 Hz every pattern still starts on its first frame; at any rate one pulse per frame at
+    // most and never past 3999 us.
+    for (int h = 0; h < int(Haptic::count); ++h)
+        for (float hz : {60.f, 90.f, 120.f, 144.f}) {
+            auto v = pulses(Haptic(h), hz, 1);
+            CHECK(!v.empty() && v[0].first == 0);
+            for (size_t i = 0; i < v.size(); ++i) CHECK(v[i].second <= kMaxPulseUs && (i == 0 || v[i].first > v[i - 1].first));
+        }
+    // Clicks and ticks are a single short pulse.
+    for (Haptic h : {Haptic::hit, Haptic::dry, Haptic::seat, Haptic::forend}) {
+        auto v = pulses(h, 120, 1);
+        CHECK(v.size() == 1 && v[0].second < 2000);
+    }
+    // `haptics` scales the lengths (capped); 0 is off.
+    CHECK(pulses(Haptic::pistol, 120, 0).empty());
+    auto half = pulses(Haptic::pistol, 120, 0.5f);
+    CHECK(half.size() == 5 && half[0].second == 2000);
+    auto dbl = pulses(Haptic::seat, 120, 2);
+    CHECK(dbl.size() == 1 && dbl[0].second == 3000);
+    CHECK(pulses(Haptic::pistol, 120, 3)[0].second == kMaxPulseUs);
+    // Overlapping patterns: a hit tick delayed past the pistol's thump gets its own frame; during a
+    // thump the strongest pulse wins the frame.
+    HapticPlayer p;
+    p.play(Haptic::pistol, 0);
+    p.play(Haptic::hit, 0, feedback_def("magnum").hit_ms);
+    std::vector<std::pair<int, unsigned>> v;
+    for (int f = 0; f < 30; ++f)
+        if (unsigned us = p.tick(f / 120.0, 1)) v.push_back({f, us});
+    CHECK(v.size() == 6 && v.back().first == 6 && v.back().second == 1300);
+    CHECK(p.active() == 0);
+    // Minigun: a buzz while firing (a pulse in most frames at 120 Hz).
+    HapticPlayer m;
+    int on = 0;
+    for (int f = 0; f < 120; ++f) {
+        if (f % 3 == 0) m.play(Haptic::minigun, f / 120.0);
+        if (m.tick(f / 120.0, 1)) ++on;
+    }
+    CHECK(on >= 70);
+}
+
 // Release vs development: the test copy (probe.ini) keeps the whole harness and its save redirect
 // in every mode; a release install never redirects, never hides or mutes the window, never polls a
 // command file, and with mode=off (or Shift held at start) hooks nothing at all.
@@ -1413,6 +1598,11 @@ int main() {
     test_minigun_spin_never_aliases();
     test_pose_weapons();
     test_crossbow_string_bends_straight();
+    test_recoil_kick_and_cap();
+    test_recoil_lifts_about_the_grip();
+    test_flash_two_frames();
+    test_flash_images();
+    test_haptic_patterns();
     test_use_drawn_pose();
     test_flip_z_conversions();
     test_yaw_only_anchor();
