@@ -90,6 +90,14 @@
 //   vr gunmeshcheck         dev: the current weapon's bore and muzzle fitted from its live vertex buffer,
 //                           against its built-in description (`shotlog mesh` lines; overrides logged)
 //   vr clipout F            dev: hold the magazine F (0..1) of the way out; no F: from the reload state
+//   vr gunparts 0|1         the gun's moving parts on/off live (setting gun_parts)
+//   vr gunanim W T          dev: hold weapon W's moving parts (W = a weapon key or `any`; applies while
+//                           it is the current weapon) as they are T ms after a shot (T < 0: before it,
+//                           the hand cannon's hammer cocked); more fields: shot MS, lock 0|1 (slide
+//                           lock), reloadend MS (since a reload ended: the pump's rack), out F (the
+//                           reload's magazine/cylinder way out, 0..1), trigger F, spin DEG (minigun)
+//   vr gunanim off          dev: the moving parts live again
+//   vr gunbackdrop 0|1      dev: clear each eye to plain grey behind the gun (captures of its parts)
 //   findstr TEXT            dev: heap addresses holding TEXT (slow: ~1 min)
 //   drawstack HASH [N]      dev: call stacks and bound streams of the next N draws with vertex shader HASH
 //   vr                      log the current VR settings
@@ -465,6 +473,16 @@ FrameRequests control_tick() {
                 gunmodel_barrel_line(v != 0);
             } else if (what == "clipout") {
                 gunmodel_force_clip(a.empty() ? -1.f : v);
+            } else if (what == "gunanim") {
+                std::vector<std::string> args;
+                if (!a.empty()) args.push_back(a);
+                for (std::string t; ss >> t;) args.push_back(t);
+                gunmodel_anim_command(args);
+            } else if (what == "gunbackdrop") {
+                gunmodel_backdrop(v != 0);
+            } else if (what == "gunparts") {
+                if (!a.empty()) g_vr.gun_parts = v != 0;
+                logf("vr gunparts: %d", int(g_vr.gun_parts));
             } else if (what == "gunview") {
                 // Sim views of the gun in the hand: head and hand presets (hand relative to the head).
                 struct View { const char* name; float head_yaw, head_pitch, hx, hy, hz, hand_yaw, hand_pitch; };

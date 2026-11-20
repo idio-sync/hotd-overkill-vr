@@ -100,6 +100,7 @@ struct WeaponParts {
     // (clip space); `turn_sign` makes positive angles the intended direction.
     float turn_point[3] = {};
     float turn_sign = 1;
+    int chambers = 0;                // hand cannon: chambers in the cylinder (a shot turns 360/chambers)
     // Hand cannon: the cylinder and crane swing out by `swing_deg` about the barrel direction
     // through `swing_point` (clip space); positive = `swing_sign`.
     float swing_point[3] = {};
@@ -121,7 +122,7 @@ struct GunMotion {
     float kick = 0;      // 0..1: slide / knob / handle back (the magnum's hammer follows it)
     float hammer = 0;    // 0..1: hammer back
     float trigger = 0;   // 0..1: the controller's trigger
-    float cyl_deg = 0;   // hand cannon: the cylinder's turn (60 per shot)
+    float cyl_deg = 0;   // hand cannon: the cylinder's turn (one chamber, 360/7 degrees, per shot)
     float swing = 0;     // 0..1: the cylinder swung out (reload)
     float rack = 0;      // 0..1: the pump's forend back
     float spin_deg = 0;  // minigun: the barrel cluster's angle

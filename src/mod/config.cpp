@@ -235,6 +235,7 @@ void load_vr_config() {
     c.clip_drop = ini_float(L"clip_drop", c.clip_drop);
     c.gun_light = ini_float(L"gun_light", c.gun_light);
     c.gun_face_sign = ini_float(L"gun_face_sign", c.gun_face_sign) < 0 ? -1.f : 1.f;
+    c.gun_parts = ini_float(L"gun_parts", 1) != 0;
     c.game_arms = ini_float(L"game_arms", 0) != 0;
     c.camera_shake = ini_float(L"camera_shake", 0) != 0;
     c.head_bob = ini_float(L"head_bob", 0) != 0;
@@ -254,9 +255,9 @@ void load_vr_config() {
     c.stereo = c.mode != VrMode::off;
     g_vr = c;
     gunmodel_load_config();
-    logf("vr: gun_model=%d gun_grip=%.3f,%.3f,%.3f gun_scale=%.2f aim_barrel=%d clip_anim=%d clip_drop=%.2f gun_light=%.2f",
+    logf("vr: gun_model=%d gun_grip=%.3f,%.3f,%.3f gun_scale=%.2f aim_barrel=%d clip_anim=%d clip_drop=%.2f gun_light=%.2f gun_parts=%d",
          int(c.gun_model), c.gun_grip[0], c.gun_grip[1], c.gun_grip[2], c.gun_scale, int(c.aim_barrel), int(c.clip_anim), c.clip_drop,
-         c.gun_light);
+         c.gun_light, int(c.gun_parts));
     logf("vr: mode=%s ipd_m=%.4f unit_m=%.4f sim_yaw=%.1f sim_pitch=%.1f cone_deg=%.1f eye_res=%s%dx%d uncap=%d crosshair=%d",
          mode_name(c.mode), c.ipd_m, c.unit_m, c.sim_yaw_deg, c.sim_pitch_deg, c.cone_deg, c.eye_res_auto ? "auto " : "", c.eye_w,
          c.eye_h, int(c.uncap), int(c.crosshair));

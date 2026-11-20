@@ -30,6 +30,14 @@
 // the meshes with tools/gun_mesh.py, the bores checked with the bore fit). The grip point sits at gun_grip in the controller's frame;
 // the barrel is parallel to the controller's pointing axis (unless hold_<weapon> tilts it), and
 // the shot ray is the barrel line itself (gun.cpp), so the barrel points exactly where shots go.
+//
+// Moving parts (gun feedback stage 1, src/vr/gunparts.h): when a model is resolved its vertex and
+// index buffers are read back and split into pieces, and the pieces of each moving part (slide,
+// hammer, trigger, ...; the hand cannon's cylinder and the minigun's barrels in their _Clip meshes)
+// are found by their model-space boxes. Each vertex's part index and weight go into a second vertex
+// stream the mod owns; the gun shader moves it by its part's matrix (model space) before the world
+// matrix. The parts follow player 1's shots (gunmodel_shot), the ammo, the reload state and the
+// controller's analog trigger. The shot ray never sees any of it: it is the un-moved barrel.
 #include "common.h"
 
 #include <atomic>
@@ -40,8 +48,10 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "../vr/gunfit.h"
+#include "../vr/gunparts.h"
 #include "../vr/gunpose.h"
 
 struct ID3DXBuffer : IUnknown {
@@ -57,7 +67,10 @@ constexpr uintptr_t kInstanceVtbl = 0x80FB58;  // actor instance (engine class, 
 
 // --- weapons ---
 
-enum ClipMode { kClipNone = 0, kClipDrop = 1, kClipFixed = 2 };
+// kClipPart: the _Clip is a part of the gun (the hand cannon's cylinder, the pump's forend; the
+// minigun's barrel cluster with kClipFixed too): for those weapons any value but kClipNone draws it
+// in place as a part (src/vr/gunparts.h).
+enum ClipMode { kClipNone = 0, kClipDrop = 1, kClipFixed = 2, kClipPart = 3 };
 
 struct WeaponDef {
     const char* actr;  // the actor's name (ACTR+0x6C)
@@ -75,8 +88,8 @@ struct WeaponDef {
 static const WeaponDef kDefs[] = {
     {"GunArms_Magnum", "magnum", {{1, 0, 0}, {0, 1, 0}, {23.436f, 9.433f, -0.87f}, {0.0f, 1.0f, -0.87f}, {-0.25f, -0.97f, 0}}, kClipDrop, true},
     {"GunArms_Gwendalin", "gold_magnum", {{0, 0, 1}, {0, 1, 0}, {-0.007f, 6.485f, 16.328f}, {0, -3.0f, -11.5f}, {0, -1, 0}}, kClipNone, true},
-    {"GunArms_HandCannon", "handcannon", {{1, 0, 0}, {0, 1, 0}, {33.495f, 9.14f, -0.519f}, {-2.0f, 0.5f, -0.5f}, {0, -1, 0}}, kClipNone, true},
-    {"GunArms_ShotgunPump", "pump", {{1, 0, 0}, {0, 1, 0}, {61.669f, 10.807f, -0.481f}, {-8.0f, 4.0f, -0.5f}, {0, -1, 0}}, kClipNone, true},
+    {"GunArms_HandCannon", "handcannon", {{1, 0, 0}, {0, 1, 0}, {33.495f, 9.14f, -0.519f}, {-2.0f, 0.5f, -0.5f}, {0, -1, 0}}, kClipPart, true},
+    {"GunArms_ShotgunPump", "pump", {{1, 0, 0}, {0, 1, 0}, {61.669f, 10.807f, -0.481f}, {-8.0f, 4.0f, -0.5f}, {0, -1, 0}}, kClipPart, true},
     {"GunArms_ShotGunAuto", "autoshotgun", {{1, 0, 0}, {0, 1, 0}, {73.283f, 12.4f, -0.749f}, {1.0f, 2.0f, -0.7f}, {0, -1, 0}}, kClipDrop, true},
     {"GunArms_SMG", "smg", {{1, 0, 0}, {0, 1, 0}, {28.3f, 11.5f, -0.72f}, {2.0f, 1.5f, -0.9f}, {0, -1, 0}}, kClipDrop, true},
     {"GunArms_AssaultRifle", "rifle", {{0.968961f, -0.110631f, -0.221077f}, {0, 1, 0}, {52.671f, 2.87f, -11.168f}, {-3.0f, -1.0f, 0.8f}, {0, -1, 0}}, kClipDrop, true},
@@ -127,6 +140,27 @@ struct Mesh {
     D3DFORMAT ifmt = D3DFMT_INDEX16;
     char name[64] = {};
     uintptr_t vb_rec = 0;  // the engine's vertex buffer record: still holding vb = still loaded
+    // Moving parts: per vertex its part index and weight (src/vr/gunparts.h), and our vertex
+    // buffer of them (the shader's second stream; made at the first draw).
+    std::vector<float> parts;
+    IDirect3DVertexBuffer9* part_vb = nullptr;
+    bool part_vb_failed = false;
+};
+
+// Moving parts' animation state, per weapon object (gunmodel_draw).
+struct Anim {
+    bool init = false;
+    bool reloading = false;  // the reloading flag (cWeapon+0x764) and its last change
+    double flag_t = 0;
+    float out0 = 0, out_last = 0;  // the magazine's / cylinder's way out (clip_out_fraction)
+    double reload_end_t = -1e9;    // the flag's last fall (the pump racks)
+    bool locked = false;           // slide lock: emptied by a shot, until the reload seats
+    unsigned lock_checked = 0;     // the shot whose ammo was checked
+    double unlock_t = -1e9;
+    bool hammer_down = false;      // hand cannon: fell on a shot, until the trigger is let go
+    unsigned hammer_shot = 0;
+    float spin_speed = 0, spin_deg = 0;  // minigun
+    double last_t = 0;
 };
 
 struct Model {
@@ -135,18 +169,42 @@ struct Model {
     Mesh gun, clip;
     bool has_clip = false;
     uintptr_t data = 0;  // cWeapon+4 when resolved
+    const vr::WeaponParts* wp = nullptr;  // its moving parts (null: none)
+    bool gun_parts_ok = false;  // the gun mesh's parts were found
+    bool clip_ok = true;        // a clip_part weapon's _Clip is the expected mesh (else hidden, as before)
+    Anim anim;
 };
 
 static void release(Mesh& m) {
     if (m.vb) m.vb->Release();
     if (m.ib) m.ib->Release();
+    if (m.part_vb) m.part_vb->Release();
     for (auto*& t : m.tex)
         if (t) t->Release(), t = nullptr;
-    m.vb = nullptr, m.ib = nullptr;
+    m.vb = nullptr, m.ib = nullptr, m.part_vb = nullptr;
 }
 
 static std::map<uintptr_t, Model> g_models;  // by cWeapon
 static bool g_level_was;
+
+// Shots, per weapon object (gunmodel_shot; the game thread). Lock order: g_mx, then g_shot_mx.
+struct ShotRec {
+    double t = 0, t_prev = 0;
+    unsigned n = 0;
+};
+static std::mutex g_shot_mx;
+static std::map<uintptr_t, ShotRec> g_shots;
+
+double gunmodel_now() {
+    static const double inv = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return 1.0 / double(f.QuadPart);
+    }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return double(c.QuadPart) * inv;
+}
 
 static uintptr_t rd(uintptr_t a) {
     uintptr_t v = 0;
@@ -248,6 +306,8 @@ static uintptr_t instance_of(uintptr_t entity) {
     return 0;
 }
 
+static void build_parts(Model& m);
+
 static Model resolve(uintptr_t weapon) {
     Model m;
     const uintptr_t data = rd(weapon + 4);
@@ -274,6 +334,7 @@ static Model resolve(uintptr_t weapon) {
     if (!m.ok) logf("gun model: weapon %p (data %p) has no resident GunArms model; no model drawn", reinterpret_cast<void*>(weapon),
                     reinterpret_cast<void*>(data));
     m.ok = m.ok && m.def;
+    if (m.ok) build_parts(m);
     return m;
 }
 
@@ -281,6 +342,8 @@ static void release_all() {
     for (auto& [w, m] : g_models) release(m.gun), release(m.clip);
     if (!g_models.empty()) logf("gun model: level ended, %zu weapon model(s) released", g_models.size());
     g_models.clear();
+    std::lock_guard lock(g_shot_mx);
+    g_shots.clear();
 }
 
 static uintptr_t current_weapon() {
@@ -290,7 +353,7 @@ static uintptr_t current_weapon() {
 }
 
 // The current weapon's model (resolving it the first time); null if none. Call with g_mx held.
-static const Model* current_model(uintptr_t* weapon_out = nullptr) {
+static Model* current_model(uintptr_t* weapon_out = nullptr) {
     const GameState st = game_state();
     if (g_level_was && !st.level) release_all();
     g_level_was = st.level;
@@ -330,7 +393,9 @@ static std::atomic<bool> g_enabled{true};
 static std::atomic<float> g_force_clip{-1};
 static bool g_barrel_line;
 
+static std::atomic<bool> g_backdrop;
 void gunmodel_enable(bool on) { g_enabled = on; }
+void gunmodel_backdrop(bool on) { g_backdrop = on; }
 void gunmodel_force_clip(float f) { g_force_clip = f; }
 void gunmodel_barrel_line(bool on) { g_barrel_line = on; }
 
@@ -345,13 +410,16 @@ struct Placement {
     vr::Mat4 gun;   // gun frame in the hand frame
     vr::Mat4 m2g;   // model -> gun frame
     int clip;
-    const Model* model;
+    Model* model;
+    uintptr_t weapon;
 };
 
 static bool placement(Placement* p) {
     if (g_vr.mode == VrMode::off || !g_vr.gun_model || !g_enabled) return false;
-    const Model* m = current_model();
+    uintptr_t weapon = 0;
+    Model* m = current_model(&weapon);
     if (!m) return false;
+    p->weapon = weapon;
     auto it = g_cfg.find(m->def->key);
     if (it == g_cfg.end() || !it->second.show) return false;
     const WeaponCfg& c = it->second;
@@ -384,19 +452,29 @@ static IDirect3DVertexDeclaration9* g_decl;
 static IDirect3DVertexDeclaration9* g_decl_line;
 static IDirect3DTexture9* g_white;
 static IDirect3DStateBlock9* g_sb;
+static IDirect3DVertexBuffer9* g_rest_vb;  // part 0, weight 1 for kRestVerts vertices: a mesh without its own stream
 static bool g_shader_failed;
+constexpr UINT kRestVerts = 8192;
 
+// The second stream (TEXCOORD1): the vertex's part and weight; c8.. hold each part's matrix (the
+// first three rows, model space), applied before the model's world matrix and blended by the weight.
+static_assert(vr::kMaxParts * 3 == 18, "cPart below holds 3 rows per part");
 static const char kVs[] = R"(
 float4 cClip[4] : register(c0);
 float4 cView[4] : register(c4);
-struct I { float4 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD0; };
+float4 cPart[18] : register(c8);
+struct I { float4 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD0; float2 pw : TEXCOORD1; };
 struct O { float4 p : POSITION; float2 uv : TEXCOORD0; float3 n : TEXCOORD1; float3 v : TEXCOORD2; };
 O main(I i) {
     O o;
-    float4 p = float4(i.p.xyz, 1);
+    int k = (int)(i.pw.x + 0.5) * 3;
+    float4 p0 = float4(i.p.xyz, 1);
+    float3 q = float3(dot(p0, cPart[k]), dot(p0, cPart[k + 1]), dot(p0, cPart[k + 2]));
+    float4 p = float4(lerp(i.p.xyz, q, i.pw.y), 1);
+    float3 nq = float3(dot(i.n, cPart[k].xyz), dot(i.n, cPart[k + 1].xyz), dot(i.n, cPart[k + 2].xyz));
+    float4 n = float4(lerp(i.n, nq, i.pw.y), 0);
     o.p = float4(dot(p, cClip[0]), dot(p, cClip[1]), dot(p, cClip[2]), dot(p, cClip[3]));
     o.v = float3(dot(p, cView[0]), dot(p, cView[1]), dot(p, cView[2]));
-    float4 n = float4(i.n, 0);
     o.n = float3(dot(n, cView[0]), dot(n, cView[1]), dot(n, cView[2]));
     o.uv = i.uv;
     return o;
@@ -450,8 +528,23 @@ static ID3DXBuffer* compile(const char* src, const char* profile) {
     return SUCCEEDED(hr) ? code : nullptr;
 }
 
+// Our vertex buffer of `n` floats (the part stream), filled once.
+static IDirect3DVertexBuffer9* make_stream(IDirect3DDevice9* dev, const float* data, size_t n) {
+    IDirect3DVertexBuffer9* vb = nullptr;
+    const UINT bytes = UINT(n * sizeof(float));
+    if (!bytes || FAILED(dev->CreateVertexBuffer(bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vb, nullptr))) return nullptr;
+    void* p = nullptr;
+    if (FAILED(vb->Lock(0, bytes, &p, 0)) || !p) {
+        vb->Release();
+        return nullptr;
+    }
+    memcpy(p, data, bytes);
+    vb->Unlock();
+    return vb;
+}
+
 static bool ensure_resources(IDirect3DDevice9* dev) {
-    if (g_vs && g_ps && g_decl && g_white && g_sb && g_vs_line) return true;
+    if (g_vs && g_ps && g_decl && g_white && g_sb && g_vs_line && g_rest_vb) return true;
     if (g_shader_failed) return false;
     g_shader_failed = true;
     ID3DXBuffer *vs = compile(kVs, "vs_3_0"), *ps = compile(kPs, "ps_3_0"), *vsl = compile(kVsLine, "vs_3_0"), *psl = compile(kPsLine, "ps_3_0");
@@ -463,10 +556,12 @@ static bool ensure_resources(IDirect3DDevice9* dev) {
                  SUCCEEDED(dev->CreatePixelShader(static_cast<const DWORD*>(psl->GetBufferPointer()), &g_ps_line));
     for (ID3DXBuffer* b : {vs, ps, vsl, psl})
         if (b) b->Release();
-    // vf_stock_staticsinglenormalmapped: position, normal, colour, uv, tangent (52 bytes).
+    // vf_stock_staticsinglenormalmapped: position, normal, colour, uv, tangent (52 bytes); stream 1:
+    // our part index and weight.
     const D3DVERTEXELEMENT9 el[] = {{0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
                                     {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
                                     {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+                                    {1, 0, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
                                     D3DDECL_END()};
     const D3DVERTEXELEMENT9 ell[] = {{0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0}, D3DDECL_END()};
     if (ok) ok = SUCCEEDED(dev->CreateVertexDeclaration(el, &g_decl)) && SUCCEEDED(dev->CreateVertexDeclaration(ell, &g_decl_line));
@@ -481,6 +576,10 @@ static bool ensure_resources(IDirect3DDevice9* dev) {
         }
     }
     if (ok) ok = SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &g_sb));
+    if (ok) {
+        const std::vector<float> rest = vr::rest_stream(kRestVerts);
+        ok = (g_rest_vb = make_stream(dev, rest.data(), rest.size())) != nullptr;
+    }
     logf("gun model: shaders and states %s", ok ? "ready" : "FAILED (no gun model)");
     g_shader_failed = !ok;
     return ok;
@@ -491,14 +590,39 @@ void gunmodel_reset() {
     for (IUnknown** p : {reinterpret_cast<IUnknown**>(&g_vs), reinterpret_cast<IUnknown**>(&g_ps), reinterpret_cast<IUnknown**>(&g_vs_line),
                          reinterpret_cast<IUnknown**>(&g_ps_line), reinterpret_cast<IUnknown**>(&g_decl),
                          reinterpret_cast<IUnknown**>(&g_decl_line), reinterpret_cast<IUnknown**>(&g_white),
-                         reinterpret_cast<IUnknown**>(&g_sb)})
+                         reinterpret_cast<IUnknown**>(&g_sb), reinterpret_cast<IUnknown**>(&g_rest_vb)})
         if (*p) (*p)->Release(), *p = nullptr;
+    for (auto& [w, m] : g_models)
+        for (Mesh* mesh : {&m.gun, &m.clip})
+            if (mesh->part_vb) mesh->part_vb->Release(), mesh->part_vb = nullptr, mesh->part_vb_failed = false;
     g_shader_failed = false;
 }
 
 static void set_matrix(IDirect3DDevice9* dev, UINT reg, const vr::Mat4& m) { raw_set_vs_const(dev, reg, &m.m[0][0], 4); }
 
-static void draw_mesh(IDirect3DDevice9* dev, const Mesh& m) {
+// The parts' matrices (c8..): the first three rows of each.
+static void set_parts(IDirect3DDevice9* dev, const vr::Mat4* parts) {
+    float rows[vr::kMaxParts * 12];
+    for (int i = 0; i < vr::kMaxParts; ++i)
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c) rows[i * 12 + r * 4 + c] = parts[i].m[r][c];
+    raw_set_vs_const(dev, 8, rows, vr::kMaxParts * 3);
+}
+
+// The mesh's part stream: its own (made at the first draw), else everything at rest.
+static bool bind_parts(IDirect3DDevice9* dev, Mesh& m) {
+    if (!m.part_vb && !m.part_vb_failed && m.parts.size() == size_t(m.nv) * 2) {
+        m.part_vb = make_stream(dev, m.parts.data(), m.parts.size());
+        if (!m.part_vb) m.part_vb_failed = true, logf("gun parts: %s: no vertex buffer for its parts; drawn still", m.name);
+    }
+    IDirect3DVertexBuffer9* vb = m.part_vb ? m.part_vb : (m.nv <= kRestVerts ? g_rest_vb : nullptr);
+    if (!vb) return false;
+    dev->SetStreamSource(1, vb, 0, 8);
+    return true;
+}
+
+static void draw_mesh(IDirect3DDevice9* dev, Mesh& m) {
+    if (!bind_parts(dev, m)) return;
     dev->SetStreamSource(0, m.vb, 0, m.stride);
     dev->SetIndices(m.ib);
     raw_set_texture(dev, 0, m.tex[0] ? m.tex[0] : g_white);
@@ -584,6 +708,242 @@ static HRESULT seh_read_vb(IDirect3DVertexBuffer9* vb, UINT bytes, void* out) {
         return E_POINTER;
     }
     return hr;
+}
+
+static HRESULT seh_read_ib(IDirect3DIndexBuffer9* ib, UINT bytes, void* out) {
+    void* p = nullptr;
+    HRESULT hr = E_FAIL;
+    __try {
+        hr = ib->Lock(0, bytes, &p, D3DLOCK_READONLY);
+        if (SUCCEEDED(hr)) {
+            memcpy(out, p, bytes);
+            ib->Unlock();
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return E_POINTER;
+    }
+    return hr;
+}
+
+// A mesh's positions (its whole vertices, stride/4 floats each) and indices, read back.
+static bool read_mesh(const Mesh& g, std::vector<float>* pos, std::vector<uint32_t>* idx, HRESULT* hr) {
+    const UINT bytes = g.nv * g.stride;
+    pos->assign((bytes + 3) / 4, 0.f);
+    if (FAILED(*hr = seh_read_vb(g.vb, bytes, pos->data()))) return false;
+    const UINT isz = g.ifmt == D3DFMT_INDEX32 ? 4 : 2;
+    std::vector<uint8_t> raw(size_t(g.nidx) * isz);
+    if (FAILED(*hr = seh_read_ib(g.ib, g.nidx * isz, raw.data()))) return false;
+    idx->resize(g.nidx);
+    for (UINT i = 0; i < g.nidx; ++i) {
+        if (isz == 4) memcpy(&(*idx)[i], &raw[size_t(i) * 4], 4);
+        else (*idx)[i] = uint32_t(raw[size_t(i) * 2]) | uint32_t(raw[size_t(i) * 2 + 1]) << 8;
+    }
+    return true;
+}
+
+// The moving parts of a model just resolved (src/vr/gunparts.h): its gun mesh's and, for the hand
+// cannon, pump and minigun, its _Clip mesh's. Anything unexpected leaves that mesh still (logged);
+// a clip_part weapon's _Clip that isn't the expected mesh is hidden, as it was before.
+static void build_parts(Model& m) {
+    m.gun.parts = vr::rest_stream(m.gun.nv);
+    m.clip.parts = vr::rest_stream(m.clip.nv);
+    m.wp = vr::weapon_parts(m.def->key);
+    if (!m.wp) return;
+    auto run = [&](Mesh& mesh, const vr::PartRule* rules, int n, const char* what) {
+        std::vector<float> pos;
+        std::vector<uint32_t> idx;
+        HRESULT hr = S_OK;
+        if (!read_mesh(mesh, &pos, &idx, &hr)) {
+            logf("gun parts: %s %s: reading the mesh back failed (%08lx); it stays still", m.def->key, what, hr);
+            return false;
+        }
+        const vr::PartsResult r = vr::assign_parts(pos.data(), mesh.nv, mesh.stride / 4, idx.data(), idx.size(), rules, n);
+        logf("gun parts: %s %s (%s): %d pieces; %s%s", m.def->key, what, mesh.name, r.pieces, r.log.c_str(),
+             r.ok ? "" : " - not the mesh expected: it stays still");
+        if (r.ok) mesh.parts = r.stream;
+        return r.ok;
+    };
+    if (m.wp->n_gun > 0) m.gun_parts_ok = run(m.gun, m.wp->gun, m.wp->n_gun, "gun");
+    if (m.wp->clip_part) {
+        if (!m.has_clip) {
+            m.clip_ok = false;
+            logf("gun parts: %s: no _Clip mesh resident", m.def->key);
+        } else {
+            m.clip_ok = run(m.clip, m.wp->clip, m.wp->n_clip, "clip");
+            if (!m.clip_ok) logf("gun parts: %s: its _Clip is hidden (as before)", m.def->key);
+        }
+    }
+}
+
+// --- shots and the parts' animation ---
+
+void gunmodel_shot(uintptr_t weapon) {
+    const double t = gunmodel_now();
+    ShotRec r;
+    {
+        std::lock_guard lock(g_shot_mx);
+        ShotRec& s = g_shots[weapon];
+        s.t_prev = s.t, s.t = t, ++s.n;
+        r = s;
+    }
+    static int logged;
+    if (logged < 300) {
+        ++logged;
+        char name[64] = "?", key[16] = "?";
+        gunmodel_weapon_name(weapon, name, key);
+        if (r.n > 1) logf("gun anim: shot %u of %s (%p), %.0f ms after the one before", r.n, key, reinterpret_cast<void*>(weapon), (r.t - r.t_prev) * 1000);
+        else logf("gun anim: shot %u of %s (%p)", r.n, key, reinterpret_cast<void*>(weapon));
+    }
+}
+
+bool gunmodel_last_shot(uintptr_t weapon, double* t, unsigned* count) {
+    std::lock_guard lock(g_shot_mx);
+    auto it = g_shots.find(weapon);
+    if (it == g_shots.end() || !it->second.n) return false;
+    *t = it->second.t, *count = it->second.n;
+    return true;
+}
+
+// dev `vr gunanim`: the current weapon's parts held as they are T ms after a shot, and/or the
+// slide lock, the reload's way out, the time since a reload ended, the trigger, the minigun's angle.
+struct Freeze {
+    bool on = false;
+    std::string key;  // a kDefs key or "any"
+    float shot_ms = NAN, reload_end_ms = NAN, out = NAN, trigger = NAN, spin = NAN;
+    int lock = -1;
+};
+static Freeze g_freeze;
+
+void gunmodel_anim_command(const std::vector<std::string>& a) {
+    std::lock_guard lock(g_mx);
+    if (a.empty() || a[0] == "off") {
+        g_freeze = Freeze{};
+        logf("vr gunanim: live");
+        return;
+    }
+    Freeze f;
+    f.on = true, f.key = a[0];
+    bool ok = a.size() >= 2;
+    for (size_t i = 1; i < a.size() && ok;) {
+        const std::string& field = a[i];
+        char* end = nullptr;
+        const float t = strtof(field.c_str(), &end);
+        if (end != field.c_str() && *end == 0) {  // `vr gunanim W T`: T ms after a shot
+            f.shot_ms = t;
+            ++i;
+            continue;
+        }
+        if (i + 1 >= a.size()) {
+            ok = false;
+            break;
+        }
+        const float v = strtof(a[i + 1].c_str(), nullptr);
+        i += 2;
+        if (field == "shot") f.shot_ms = v;
+        else if (field == "lock") f.lock = v != 0;
+        else if (field == "reloadend") f.reload_end_ms = v;
+        else if (field == "out") f.out = v;
+        else if (field == "trigger") f.trigger = v;
+        else if (field == "spin") f.spin = v;
+        else ok = false;
+    }
+    if (!ok) {
+        logf("vr gunanim: usage: off | WEAPON|any [T] [shot MS] [lock 0|1] [reloadend MS] [out F] [trigger F] [spin DEG]");
+        return;
+    }
+    g_freeze = f;
+    logf("vr gunanim: %s frozen: shot %.0f ms, lock %d, reload end %.0f ms ago, out %.2f, trigger %.2f, spin %.1f deg", f.key.c_str(), f.shot_ms,
+         f.lock, f.reload_end_ms, f.out, f.trigger, f.spin);
+}
+
+static float smooth01(float t) {
+    t = std::fmin(1.f, std::fmax(0.f, t));
+    return t * t * (3 - 2 * t);
+}
+
+// This frame's motion of the current weapon's parts, and how far its magazine (or the hand
+// cannon's cylinder) is out for a reload. Call with g_mx held.
+static vr::GunMotion animate(Model& m, uintptr_t w, float* clip_out) {
+    Anim& a = m.anim;
+    const double now = gunmodel_now();
+    ShotRec s;
+    {
+        std::lock_guard lock(g_shot_mx);
+        auto it = g_shots.find(w);
+        if (it != g_shots.end()) s = it->second;
+    }
+    uint32_t ammo = 1;
+    uint8_t reloading = 0;
+    float progress = 0;
+    safe_copy(&ammo, w + 0x760, 4), safe_copy(&reloading, w + 0x764, 1), safe_copy(&progress, w + 0x76C, 4);
+    if (!(progress >= 0 && progress <= 2)) progress = 0;
+    if (!a.init) {
+        a.init = true, a.reloading = reloading != 0, a.flag_t = now - 10, a.last_t = now;
+        a.lock_checked = a.hammer_shot = s.n;
+    }
+    // The reloading flag's last change, and how far out the magazine was then (milestone 4).
+    if ((reloading != 0) != a.reloading) {
+        if (a.reloading) a.reload_end_t = now;
+        a.reloading = reloading != 0, a.flag_t = now, a.out0 = a.out_last;
+    }
+    a.out_last = vr::clip_out_fraction(a.reloading, progress, float(now - a.flag_t), a.out0);
+    *clip_out = g_vr.clip_anim ? a.out_last : 0;
+    if (g_force_clip >= 0) *clip_out = g_force_clip;
+    const float dt = float(now - a.last_t);
+    a.last_t = now;
+
+    const vr::WeaponParts* wp = m.wp;
+    const Freeze& fz = g_freeze;
+    const bool frozen = fz.on && (fz.key == "any" || fz.key == m.def->key);
+    float since = s.n ? float(now - s.t) : 1e9f, since_prev = s.n > 1 ? float(now - s.t_prev) : 1e9f;
+    float since_reload = float(now - a.reload_end_t);
+    CtlState ctl;
+    float trigger = vrsys_controller(true, &ctl) ? std::fmin(1.f, std::fmax(0.f, ctl.trigger)) : 0.f;
+    unsigned shots = s.n;
+    if (frozen) {
+        if (!std::isnan(fz.shot_ms)) since = fz.shot_ms / 1000, since_prev = 1e9f, shots = (std::max)(shots, 1u);
+        if (!std::isnan(fz.reload_end_ms)) since_reload = fz.reload_end_ms / 1000;
+        if (!std::isnan(fz.trigger)) trigger = fz.trigger;
+        if (!std::isnan(fz.out)) *clip_out = fz.out;
+    }
+    vr::GunMotion mo;
+    if (!wp || !g_vr.gun_parts) return mo;
+    mo.trigger = trigger;
+    mo.kick = (std::max)(vr::kick_curve(since, wp->kick_back, wp->kick_home), vr::kick_curve(since_prev, wp->kick_back, wp->kick_home));
+    if (wp->slide_lock) {
+        // A shot that emptied the magazine: the slide stays back until the reload seats the new one.
+        if (s.n != a.lock_checked && since >= wp->kick_back) {
+            a.lock_checked = s.n;
+            if (ammo == 0) a.locked = true;
+        }
+        if (a.locked && (ammo > 0 || (a.reloading && progress >= 0.85f))) a.locked = false, a.unlock_t = now;
+        const bool locked = frozen && fz.lock >= 0 ? fz.lock != 0 : a.locked;
+        if (locked) mo.kick = 1;
+        else if (!frozen) mo.kick = (std::max)(mo.kick, 1 - smooth01(float(now - a.unlock_t) / wp->kick_home));
+    }
+    mo.hammer = mo.kick;  // the magnum's hammer is pushed back by the slide
+    if (!strcmp(m.def->key, "handcannon")) {
+        // Double action: the trigger cocks the hammer, the shot drops it; it stays down until the
+        // trigger is let go. Then the cylinder turns to the next chamber.
+        if (s.n != a.hammer_shot) a.hammer_shot = s.n, a.hammer_down = true;
+        if (a.hammer_down && trigger < 0.25f) a.hammer_down = false;
+        float cock = a.hammer_down ? 0 : std::fmin(1.f, trigger / 0.5f);
+        if (since < vr::kHammerFall) cock = 1 - since / vr::kHammerFall;
+        if (frozen && !std::isnan(fz.shot_ms)) cock = since < 0 ? 1 : since < vr::kHammerFall ? 1 - since / vr::kHammerFall : 0;
+        mo.hammer = cock;
+        const int ch = wp->chambers > 0 ? wp->chambers : 6;
+        mo.cyl_deg = 360.f / float(ch) * std::fmod(float(shots ? shots - 1 : 0) + vr::cylinder_turn(since), float(ch));
+        mo.swing = *clip_out;
+    }
+    if (wp->rack_travel != 0)
+        mo.rack = (std::max)(vr::rack_curve(since, wp->rack_start, wp->rack_back, wp->rack_hold, wp->rack_fwd),
+                             vr::rack_curve(since_reload, 0, wp->rack_back, wp->rack_hold, wp->rack_fwd));
+    if (!strcmp(m.def->key, "minigun")) {
+        vr::spin_step(trigger > 0.5f || since < 0.15f, dt, &a.spin_speed, &a.spin_deg);
+        mo.spin_deg = frozen && !std::isnan(fz.spin) ? fz.spin : a.spin_deg;
+    }
+    if (wp->slide_is_string) mo.string = vr::string_curve(since, wp->string_snap, wp->string_draw);
+    return mo;
 }
 
 static void log_mesh_compare(const char* source, const Model& m, const vr::BoreFit& f, const vr::GunModelDesc& d) {
@@ -676,31 +1036,27 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
     vr::Mat4 world;
     if (!vr::gun_world_matrix(view, g_vr.unit_m, hand, p.gun, p.m2g, &world)) return;
     if (gun_shotlog_on()) record_drawn(world, hand, p);
-    // The magazine: along clip_dir (model space) while reloading.
-    vr::Mat4 clip_world = world;
-    bool draw_clip = p.clip == kClipFixed;
-    if (p.clip == kClipDrop) {
-        float out = 0;
-        const uintptr_t w = current_weapon();
-        uint8_t reloading = 0;
-        float progress = 0;
-        if (w) safe_copy(&reloading, w + 0x764, 1), safe_copy(&progress, w + 0x76C, 4);
-        // The flag's last change (per weapon object) and how far out the magazine was then.
-        static uintptr_t anim_w;
-        static bool anim_reloading;
-        static ULONGLONG anim_t;
-        static float anim_out0, anim_last;
-        const ULONGLONG now = GetTickCount64();
-        if (w != anim_w) anim_w = w, anim_reloading = reloading != 0, anim_t = now - 10000, anim_out0 = 0, anim_last = 0;
-        if ((reloading != 0) != anim_reloading) anim_reloading = reloading != 0, anim_t = now, anim_out0 = anim_last;
-        if (!(progress >= 0 && progress <= 2)) progress = 0;
-        anim_last = vr::clip_out_fraction(anim_reloading, progress, float(now - anim_t) / 1000.f, anim_out0);
-        out = g_vr.clip_anim ? anim_last : 0;
-        if (g_force_clip >= 0) out = g_force_clip;
+    // The moving parts (drawing only: the shot ray above is the un-moved barrel), and the clip mesh:
+    // a part of the gun (cylinder, forend, barrel cluster), or a magazine that drops along clip_dir
+    // (model space) while reloading, or fixed.
+    Model& m = *p.model;
+    float out = 0;
+    const vr::GunMotion mo = animate(m, p.weapon, &out);
+    vr::GunPose pose;
+    vr::pose_weapon(m.wp, mo, &pose);
+    vr::Mat4 clip_parts[vr::kMaxParts];
+    for (vr::Mat4& c : clip_parts) c = vr::identity();
+    bool draw_clip = false;
+    if (m.wp && m.wp->clip_part) {
+        draw_clip = p.clip != kClipNone && m.clip_ok;
+        for (int i = 0; i < vr::kMaxParts; ++i) clip_parts[i] = pose.clip[i];
+    } else if (p.clip == kClipFixed) {
+        draw_clip = true;
+    } else if (p.clip == kClipDrop) {
         float d[3] = {p.desc.clip_dir[0], p.desc.clip_dir[1], p.desc.clip_dir[2]};
         const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
         const float dist = out * g_vr.clip_drop / g_metres_per_unit();  // model units
-        if (n > 0) clip_world = vr::mul(world, vr::translation(d[0] / n * dist, d[1] / n * dist, d[2] / n * dist));
+        if (n > 0) clip_parts[0] = vr::translation(d[0] / n * dist, d[1] / n * dist, d[2] / n * dist);
         draw_clip = true;
     }
     const vr::Mat4 wv = vr::mul(view, world);
@@ -730,13 +1086,14 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
     for (int eye = 0; eye < 2; ++eye) {
         vr::Mat4 clip;
         if (!eye_setup(dev, eye, &clip)) continue;
+        // dev `vr gunbackdrop 1`: the gun on plain grey (captures of its moving parts).
+        if (g_backdrop) raw_clear(dev, 0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DCOLOR_XRGB(120, 124, 132), 1.0f, 0);
         set_matrix(dev, 0, vr::mul(clip, world));
-        draw_mesh(dev, p.model->gun);
+        set_parts(dev, pose.gun);
+        draw_mesh(dev, m.gun);
         if (draw_clip) {
-            set_matrix(dev, 0, vr::mul(clip, clip_world));
-            set_matrix(dev, 4, vr::mul(view, clip_world));
-            draw_mesh(dev, p.model->clip);
-            set_matrix(dev, 4, wv);
+            set_parts(dev, clip_parts);
+            draw_mesh(dev, m.clip);
         }
     }
     // Development: the barrel line from the muzzle to the aim point.
@@ -770,6 +1127,10 @@ void gunmodel_log() {
     const Model* m = current_model(&w);
     logf("vr gunmodel: enabled %d (gun_model=%d), weapon %p -> %s", int(g_enabled.load()), int(g_vr.gun_model), reinterpret_cast<void*>(w),
          m ? m->gun.name : "(no model)");
+    if (m)
+        logf("  moving parts (gun_parts=%d): %s; gun mesh %s, clip mesh %s; slide %s", int(g_vr.gun_parts), m->wp ? "described" : "none",
+             m->gun_parts_ok ? "split" : "still", !m->wp || !m->wp->clip_part ? "-" : m->clip_ok ? "in place" : "hidden",
+             m->anim.locked ? "locked back" : "free");
     for (auto& [k, c] : g_cfg)
         logf("  %-12s show %d clip %d grip %.2f,%.2f,%.2f barrel %.3f,%.3f,%.3f muzzle %.2f,%.2f,%.2f hold %.1f,%.1f", k.c_str(), int(c.show),
              c.clip, c.desc.grip[0], c.desc.grip[1], c.desc.grip[2], c.desc.barrel[0], c.desc.barrel[1], c.desc.barrel[2], c.desc.muzzle[0],

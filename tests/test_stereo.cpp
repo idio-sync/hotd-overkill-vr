@@ -823,12 +823,14 @@ static void test_pose_weapons() {
             else CHECK(along(s, o) < -2);
         }
     }
-    // Hand cannon: the cylinder turns about its own axis (the axis stays put); 60 degrees takes the
-    // top chamber's centre (1.6 cm above the axis) to the next one's place; the crane doesn't turn.
+    // Hand cannon: the cylinder turns about its own axis (the axis stays put); one chamber (7 of
+    // them) takes the top chamber's centre (1.6 cm above the axis) to the next one's place, and
+    // positive angles move the top towards +z (the shooter's left: counter-clockwise from behind);
+    // the crane doesn't turn.
     const WeaponParts* hc = weapon_parts("handcannon");
-    CHECK(hc && hc->clip_part);
+    CHECK(hc && hc->clip_part && hc->chambers == 7);
     GunMotion m;
-    m.cyl_deg = 60;
+    m.cyl_deg = 360.f / 7;
     GunPose p;
     pose_weapon(hc, m, &p);
     const float* a = hc->turn_point;
@@ -837,8 +839,8 @@ static void test_pose_weapons() {
     CHECK_NEAR(ax.y, a[1] + hc->clip_rest[1], 1e-4);
     CHECK_NEAR(ax.z, a[2] + hc->clip_rest[2], 1e-4);
     const Vec4 ch = at(p.clip[kClipTurn], 0, a[1] + 1.6f, a[2]);
-    CHECK_NEAR(ch.y - hc->clip_rest[1] - a[1], 0.8, 1e-4);  // 1.6 cos 60
-    CHECK_NEAR(std::fabs(ch.z - hc->clip_rest[2] - a[2]), 1.6 * 0.8660254, 1e-4);
+    CHECK_NEAR(ch.y - hc->clip_rest[1] - a[1], 1.6 * std::cos(2 * kPi / 7), 1e-4);
+    CHECK_NEAR(ch.z - hc->clip_rest[2] - a[2], 1.6 * std::sin(2 * kPi / 7), 1e-4);
     CHECK(max_abs_diff(p.clip[kClipBase], translation(hc->clip_rest[0], hc->clip_rest[1], hc->clip_rest[2])) < 1e-5f);
     // Swung out: the cylinder's axis leaves the bore line sideways by more than its radius (2.2 cm)
     // plus the frame's half width (1.9 cm); the crane goes with it.

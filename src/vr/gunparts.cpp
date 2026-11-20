@@ -244,14 +244,16 @@ static std::vector<WeaponParts> build_table() {
     }
     {
         // The _Clip is the cylinder (with crane and ejector rod): in the frame's window with the
-        // top chamber on the bore; it turns 60 degrees per shot about its own axis.
+        // top chamber on the bore. It has 7 chambers (holes centred at 90 + k 360/7 degrees about
+        // its axis; the recon's "6" was wrong) and turns one chamber per shot, counter-clockwise
+        // seen from behind (checked in a capture), swinging out to the shooter's left (+z).
         WeaponParts w = make("handcannon", 1, 0, 0);
         w.gun = kHandCannonGun, w.n_gun = int(std::size(kHandCannonGun));
         w.clip = kHandCannonClip, w.n_clip = int(std::size(kHandCannonClip));
         w.clip_part = true, set3(w.clip_rest, 10.30f, 2.34f, -0.81f);
         set3(w.hammer_pivot, 3.8f, 5.0f, -0.5f), w.hammer_deg = 32;
         set3(w.trigger_pivot, 7.18f, 4.05f, -0.5f), w.trigger_deg = 16;
-        set3(w.turn_point, 0, 5.259f, 0.288f), w.turn_sign = 1;
+        set3(w.turn_point, 0, 5.259f, 0.288f), w.turn_sign = 1, w.chambers = 7;
         set3(w.swing_point, 0, 1.9f, 1.19f), w.swing_deg = 85, w.swing_sign = 1;
         t.push_back(w);
     }

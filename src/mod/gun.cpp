@@ -614,7 +614,7 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
             logf("  -> origin overridden %.1f %.1f %.1f", own[0], own[1], own[2]);
         }
     }
-    if (player_shot) shot_feedback(owner);
+    if (player_shot) shot_feedback(owner), gunmodel_shot(reinterpret_cast<uintptr_t>(self));
     if (shotlog && player_shot) {
         char wf[160], bf[800];
         weapon_fields(reinterpret_cast<uintptr_t>(self), wf, sizeof wf);
@@ -680,12 +680,16 @@ static void __fastcall hk_fire_proj(void* self, void* edx, float* origin) {
         shot_feedback(owner);
         const float before[3] = {own[0], own[1], own[2]};
         o_fire_proj(self, edx, own);
+        // Launched: it wrote the launch point back (with no projectile to launch it returns early).
+        if (own[0] != before[0] || own[1] != before[1] || own[2] != before[2]) gunmodel_shot(reinterpret_cast<uintptr_t>(self));
         if (g_shotlog) log_projectile(reinterpret_cast<uintptr_t>(self), own, before, pdir, &r);
         memcpy(pdir, saved, 12);
         return;
     }
     const float before[3] = {origin[0], origin[1], origin[2]};
     o_fire_proj(self, edx, origin);
+    if (owner && owner == player1() && (origin[0] != before[0] || origin[1] != before[1] || origin[2] != before[2]))
+        gunmodel_shot(reinterpret_cast<uintptr_t>(self));
     if (g_shotlog && owner && owner == player1())
         log_projectile(reinterpret_cast<uintptr_t>(self), origin, before, reinterpret_cast<float*>(owner + 0x1F0), nullptr);
 }

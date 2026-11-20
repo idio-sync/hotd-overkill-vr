@@ -93,6 +93,7 @@ struct VrConfig {
     float clip_drop = 0.2f;      // how far it drops, metres
     float gun_light = 1.0f;      // brightness of the gun's lighting
     float gun_face_sign = 1.0f;  // which side of the mesh's triangles faces out (lighting); -1 flips
+    bool gun_parts = true;       // the gun's moving parts (slide, hammer, trigger, cylinder, ...); 0: the meshes stay still
     // Comfort (milestone 4, comfort.cpp).
     bool game_arms = false;      // the game's own first-person arms/reload animation (0: hidden in VR)
     bool camera_shake = false;   // the game's camera shake and hit smack
@@ -198,6 +199,16 @@ bool gunmodel_last_drawn(DrawnBarrel* out);  // the last frame drawn (false: non
 // The weapon's model name (GunArms_...) and kDefs key, if its model was resolved.
 bool gunmodel_weapon_name(uintptr_t weapon, char name[64], char key[16]);
 void gunmodel_meshcheck();  // dev `vr gunmeshcheck`: the current weapon's live mesh against its kDefs description
+// Gun feedback: a player-1 shot of `weapon` (cWeapon*) now (gun.cpp: FireBullets from the weapon's
+// fire, or a projectile launched). Drives the moving parts; stage 2's flash/recoil/haptics read it.
+void gunmodel_shot(uintptr_t weapon);
+// The last shot of `weapon`: its time (QueryPerformanceCounter seconds, gunmodel_now()) and how many
+// shots it has fired this level. False: none yet.
+bool gunmodel_last_shot(uintptr_t weapon, double* t, unsigned* count);
+double gunmodel_now();
+// dev `vr gunanim ...`: freeze the current weapon's moving parts for captures (see control.cpp).
+void gunmodel_anim_command(const std::vector<std::string>& args);
+void gunmodel_backdrop(bool on);  // dev `vr gunbackdrop`: the gun drawn on plain grey in each eye
 
 // Controller input (vrinput.cpp): buttons -> the game's DirectInput, menu pointing, haptics.
 enum CtlButton : uint32_t { kBtnTrigger = 1, kBtnA = 2, kBtnB = 4, kBtnGrip = 8, kBtnStick = 16 };
