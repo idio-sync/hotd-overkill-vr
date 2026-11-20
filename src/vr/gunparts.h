@@ -1,6 +1,6 @@
 #pragma once
-// Moving parts of the game's first-person gun meshes (gun feedback stage 1,
-// docs/superpowers/specs/2026-11-20-gun-feedback-design.md), free of D3D so it can be unit-tested
+// Moving parts of the game's first-person gun meshes (gun feedback stage 1, docs/DEVELOPMENT.md
+// "Moving parts"), free of D3D so it can be unit-tested
 // (tests/test_stereo.cpp).
 //
 // Each GunArms mesh is many closed pieces: connected components once positions within 0.01 cm are

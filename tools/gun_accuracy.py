@@ -30,7 +30,7 @@ Per weapon and scenario tag: the systematic bias (the mean yaw and pitch error o
 the length of that mean), the per-shot centre bias (mean, p95, max), the perpendicular distance,
 the spread, the frame lag between the shot and the drawn frame, and the bias against the rail
 camera's turn speed in the drawn frame (bins 0-30, 30-100, 100-300, 300+ deg/s). Thresholds
-(docs/superpowers/specs/2026-11-19-gun-accuracy-design.md): still (0-30 deg/s) systematic bias
+(docs/DEVELOPMENT.md, "Gun accuracy test"): still (0-30 deg/s) systematic bias
 <= 0.25 degrees; mesh check within 0.5 degrees and 0.5 cm (across the axis; along it is reported).
 Projectiles (no impact logged): the launch direction's angle to the drawn barrel and the launch
 point's distance from the drawn barrel line.

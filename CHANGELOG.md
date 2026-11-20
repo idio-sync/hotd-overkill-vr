@@ -6,6 +6,15 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
+Guns that feel like guns, and shots that go where the gun points. The guns' parts move, each shot
+flashes and kicks, and the vibration differs per weapon. A test that compares where the game's
+bullets land with the barrel drawn on screen found two aim errors, both fixed: shots while the
+hand moved went slightly ahead of the barrel, and some guns shot from a point (or, for the
+assault rifle, in a direction) a little off their visible barrel. All of it is checked with the
+fake headset; it has not been tried in a real one yet.
+
 ### Added
 
 - **The guns' own parts move**: on each shot the pistols' slides snap back (and stay back when
@@ -41,7 +50,6 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 - **The hand cannon had no cylinder and the pump no forend**: both are separate meshes in the
   game's files, which the mod took for a speed loader and a shell and left hidden; they are now
   drawn in place.
-
 - **Shots while the hand moves go where the drawn gun pointed**: the shot, the crosshair and the
   hit marker now use the hand pose of the frame on screen instead of one about 15 ms newer, which
   put shots ahead of the barrel while sweeping onto a target (magnum, fake runtime: about 1 deg at
@@ -231,7 +239,8 @@ installer checks it), SteamVR and a headset with tracked controllers.
 Install: README.md, "Install". Uninstall: `install_game.ps1 -Game "<game folder>"
 -Uninstall`, or delete `XINPUT1_3.dll`, `openvr_api.dll` and `hovr\` from the game folder.
 
-[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/idio-sync/hotd-overkill-vr/compare/v0.1.1...v0.1.2

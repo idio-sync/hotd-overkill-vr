@@ -1,4 +1,4 @@
-# Drives the gun accuracy test (docs/superpowers/specs/2026-11-19-gun-accuracy-design.md) in the
+# Drives the gun accuracy test (docs/DEVELOPMENT.md, "Gun accuracy test") in the
 # TEST COPY with the fake SteamVR runtime: firing scenarios per weapon under `vr shotlog`, read
 # afterwards by tools/gun_accuracy.py. Measuring only: nothing here changes how the game plays,
 # except the dev-only weapon unlock below (memory only, never written by this script to a save).

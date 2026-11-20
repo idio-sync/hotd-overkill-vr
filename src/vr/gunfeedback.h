@@ -1,5 +1,5 @@
 #pragma once
-// Gun feedback stage 2 (docs/superpowers/specs/2026-11-20-gun-feedback-design.md): the muzzle
+// Gun feedback stage 2 (docs/DEVELOPMENT.md, "Muzzle flash, recoil, haptic patterns"): the muzzle
 // flash, the visual recoil and the haptic patterns, free of D3D/OpenVR so they can be unit-tested
 // (tests/test_stereo.cpp). gunmodel.cpp draws the flash and kicks the drawn gun; vrinput.cpp plays
 // the haptic patterns on the gun hand with legacy pulses.

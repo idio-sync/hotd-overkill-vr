@@ -207,7 +207,7 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   the aim point), `vr clipout F` (hold the magazine F of the way out; no F = from the reload),
   `vr gunset WEAPON show|clip|grip|barrel|muzzle|clipdir|hold V...` (live tuning).
   `tools/gun_mesh.py PACK.pc --png DIR` measures the meshes in an installed hud pack.
-- Moving parts (gun feedback stage 1, docs/superpowers/specs/2026-11-20-gun-feedback-design.md;
+- Moving parts (gun feedback stage 1;
   `src/vr/gunparts.h` has the per-weapon boxes, pivots, travels and timings, `gunmodel.cpp` the
   read-back, the part stream and the animation state): the log has one `gun parts: <weapon> gun|clip`
   line per mesh resolved (pieces found per rule; a rule that doesn't match leaves that mesh still) and
@@ -238,7 +238,7 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   of smg shot 12, frame 0`); the fake runtime records the pulses it receives (`fakevr haptics`).
   Recoil and flash use the drawn (kicked) gun; the shot ray, `shotlog`'s drawn barrel, the hit
   marker and the cursor use the un-kicked one, so `tools\gun_accuracy.ps1` must stay at 0.000 deg.
-- Gun accuracy test (docs/superpowers/specs/2026-11-19-gun-accuracy-design.md; measuring only):
+- Gun accuracy test (measuring only):
   `vr shotlog 1` (off by default) logs `shotlog shot` per player-1 shot (the spread-free ray the mod
   set, the barrel line at fire time, the barrel as drawn in the last frame on screen with its frame
   number, hand pose and the rail camera's turn speed), `shotlog pellet` per ray cast FireBullets
