@@ -528,7 +528,23 @@ static void record_drawn(const vr::Mat4& world, const vr::Mat4& hand, const Plac
     for (int i = 0; i < 3; ++i) d.hand[i] = hand.m[i][3], d.hand[3 + i] = hand.m[i][2];
     comfort_rail_turn(&d.turn, &d.turn_frame);
     snprintf(d.key, sizeof d.key, "%s", p.model->def->key);
+    // Angular speeds since the previous frame drawn (the hand sweeping; the barrel in the world).
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now), QueryPerformanceFrequency(&freq);
     std::lock_guard lock(g_drawn_mx);
+    static LARGE_INTEGER prev_t;
+    static float prev_hand[3], prev_dir[3];
+    const double dt = prev_t.QuadPart ? double(now.QuadPart - prev_t.QuadPart) / double(freq.QuadPart) : 0;
+    auto deg_between = [](const float* a, const float* b) {
+        const float c[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+        return std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]), a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) * 57.29578f;
+    };
+    if (dt > 0 && dt < 0.25) {
+        d.hand_turn = float(deg_between(prev_hand, d.hand + 3) / dt);
+        d.barrel_turn = float(deg_between(prev_dir, d.dir) / dt);
+    }
+    prev_t = now;
+    memcpy(prev_hand, d.hand + 3, sizeof prev_hand), memcpy(prev_dir, d.dir, sizeof prev_dir);
     g_drawn[g_drawn_next++ % std::size(g_drawn)] = d;
 }
 

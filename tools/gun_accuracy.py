@@ -1,6 +1,6 @@
 """Gun accuracy report from the mod's shot log (development; standard library only).
 
-    .venv\\Scripts\\python -I tools/gun_accuracy.py C:\\Users\\Virtual\\hotd-vr-game\\hovr\\probe.log [--out REPORT.txt]
+    .venv\\Scripts\\python -I tools/gun_accuracy.py C:\\Users\\Virtual\\hotd-vr-game\\hovr\\probe.log [MORE.log ...] [--summary] [--out REPORT.txt]
     .venv\\Scripts\\python -I tools/gun_accuracy.py --selftest
 
 The log comes from `vr shotlog 1` (src/mod/gun.cpp; `vr shotlog tag NAME` starts a scenario) and
@@ -45,6 +45,7 @@ STILL_MAX_DEG = 0.25
 MESH_MAX_DEG = 0.5
 MESH_MAX_CM = 0.5
 TURN_BINS = [(0, 30), (30, 100), (100, 300), (300, float("inf"))]
+MAX_LAG = 3  # frames between the shot and the last frame the gun was drawn; more: not measured
 
 LINE = re.compile(r"shotlog (\w+)\s*(.*)$")
 TOKEN = re.compile(r'(\w+)=("[^"]*"|\S*)')
@@ -155,18 +156,30 @@ def measure_shot(s):
     """Per-shot measurements, or None (mouse aim, no drawn frame, no bullets)."""
     if s.get("aim") != "hand" or s.get("drawn") != "1":
         return None
+    if int(s["frame"]) - int(s["drawn_frame"]) > MAX_LAG:
+        return None  # the gun was not drawn just before this shot (a flat screen, a level transition)
     um = s["unit_m"] * 100  # cm per game unit
     lines = {"drawn": (vec(s["drawn_o"]), unit(vec(s["drawn_d"]))), "fire": (vec(s["fire_o"]), unit(vec(s["fire_d"])))}
     bullets = [p for p in s["pellets_list"] if p.get("depth") == "0"]
     out = {"turn": float(s.get("turn", 0)), "lag": int(s["frame"]) - int(s["drawn_frame"]), "n": len(bullets),
            "hits": sum(1 for p in bullets if p.get("hit") == "1"), "through": len(s["pellets_list"]) - len(bullets),
-           "pellets_per_shot": int(s.get("pellets", "1") or 1)}
+           "pellets_per_shot": int(s.get("pellets", "1") or 1),
+           # The hand's and the drawn barrel's angular speed in the drawn frame (newer logs only).
+           "hand_turn": float(s.get("hand_turn", 0) or 0), "barrel_turn": float(s.get("barrel_turn", 0) or 0),
+           "shootable": sum(1 for p in bullets if p.get("hit") == "1" and p.get("shoot") == "1")}
     if not bullets:
         return None
     impacts = []
     for p in bullets:
         o, d = vec(p["o"]), unit(vec(p["d"]))
         impacts.append(vec(p["p"]) if p.get("hit") == "1" else add(o, scale(d, float(p["len"]))))
+    # How far the hand's pointing axis (camera space) turned between the frame drawn and the shot.
+    dh, fh = vec(s.get("drawn_hand", "") or ""), vec(s.get("fire_hand", "") or "")
+    hd, hf = (vec(",".join(s["drawn_hand"].split(",")[3:])), vec(",".join(s["fire_hand"].split(",")[3:]))) if dh and fh else (None, None)
+    out["hand_df"] = angle_deg(hd, hf) if hd and hf else 0.0
+    dm = vec(s["drawn_o"])
+    out["dist_m"] = [norm(sub(q, dm)) * s["unit_m"] for q in impacts] if dm else []
+    out["shoot_dist_m"] = [x for x, p in zip(out["dist_m"], bullets) if p.get("hit") == "1" and p.get("shoot") == "1"]
     # The spread-free ray the mod set (o, d), carried to each bullet's distance: the mod's own part
     # of the error, without the game's spread ("set" against the drawn barrel).
     so, sd = vec(s["o"]), unit(vec(s["d"]))
@@ -181,6 +194,13 @@ def measure_shot(s):
             centre = unit([sum(c) for c in zip(*[unit(sub(q, mo)) for q in pts])])
             ca, cy, cp, _ = errors(add(mo, centre), mo, md)
             out[label] = {"centre": ca, "yaw": cy, "pitch": cp, "perp_cm": [e[3] * um for e in per], "angles": [e[0] for e in per]}
+    # A multi-pellet weapon's first pellet gets no spread (FireBullets spreads every pellet but the
+    # first): the shot's aim without the game's spread, against the drawn barrel.
+    if out["pellets_per_shot"] > 1 and lines["drawn"][0] is not None:
+        first = [q for q, p in zip(impacts, bullets) if p.get("pellet") == "0"]
+        if first:
+            fa, fy, fp, _ = errors(first[0], *lines["drawn"])
+            out["first"] = {"centre": fa, "yaw": fy, "pitch": fp}
     dirs = [unit(vec(p["d"])) for p in bullets]
     mean = unit([sum(c) for c in zip(*dirs)])
     out["spread"] = [angle_deg(d, mean) for d in dirs] if len(dirs) > 1 else []
@@ -233,7 +253,7 @@ def report(shots, projs, meshes, overrides):
             mouse += 1
             continue
         groups.setdefault((weapon_name(s), s["tag"]), []).append(r)
-    w("Gun accuracy report: %d shots logged (%d measured, %d skipped: mouse aim, no drawn frame or no bullets), %d projectile launches, "
+    w("Gun accuracy report: %d shots logged (%d measured, %d skipped: mouse aim, no drawn frame within 3 frames, or no bullets), %d projectile launches, "
       "%d mesh checks" % (len(shots), len(shots) - mouse, mouse, len(projs), len(meshes)))
     w("Angles in degrees, distances in cm; mean/p95/max. bias = systematic (length of the mean yaw/pitch error); centre = each shot's "
       "bullets' mean direction against the barrel line; perp = each bullet's distance from the barrel line at its impact.")
@@ -273,9 +293,25 @@ def report(shots, projs, meshes, overrides):
             w("   %-9s %5d %8.3f %7.3f %+8.3f %+8.3f %18s %18s %8.3f" % (label, len(b), bias, se2, my + 0.0, mp + 0.0,
                                                                    fmt3(stats([r["drawn"]["centre"] for r in b]), 3),
                                                                    fmt3(stats([r["fire"]["centre"] for r in b if "fire" in r]), 3), sb))
-            if lo == 0:
+            if lo == 0 and not tag.startswith("sweep"):  # a sweeping hand is not the still test
                 verdicts.append("%s [%s] still bias %.3f +- %.3f deg (<= %.2f; the mod's set ray %.3f): %s" % (
                     weapon, tag, bias, se2, STILL_MAX_DEG, sb, still_verdict(bias, se2)))
+        if any(r["hand_turn"] > 0 for r in rs):
+            w("   by the hand's angular speed in the drawn frame (deg/s, camera space; rail under 30 deg/s only):")
+            w("   %-9s %5s %8s %7s %8s %8s %18s %18s" % ("bin", "shots", "bias", "+-2se", "yaw", "pitch", "drawn centre", "fire centre"))
+            for lo, hi in TURN_BINS:
+                b = [r for r in rs if lo <= r["hand_turn"] < hi and r["turn"] < 30 and "drawn" in r]
+                if not b:
+                    continue
+                my, mp, bias, se2 = mean_bias([r["drawn"] for r in b])
+                label = "%g-%g" % (lo, hi) if hi != float("inf") else "%g+" % lo
+                w("   %-9s %5d %8.3f %7.3f %+8.3f %+8.3f %18s %18s" % (label, len(b), bias, se2, my + 0.0, mp + 0.0,
+                                                               fmt3(stats([r["drawn"]["centre"] for r in b]), 3),
+                                                               fmt3(stats([r["fire"]["centre"] for r in b if "fire" in r]), 3)))
+        dist = [x for r in rs for x in r.get("dist_m", [])]
+        sd = [x for r in rs for x in r.get("shoot_dist_m", [])]
+        w("   impact distance from the drawn muzzle (m) mean/p95/max %s; %d bullets hit a shootable entity, at %s m" % (
+            fmt3(stats(dist), 1), len(sd), fmt3(stats(sd), 1)))
     if projs:
         w("")
         w("== projectiles (launch only; landing not logged)")
@@ -330,6 +366,129 @@ def report(shots, projs, meshes, overrides):
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------- summary (--summary)
+
+WEAPON_ORDER = ["magnum", "gold_magnum", "handcannon", "pump", "autoshotgun", "smg", "rifle", "minigun", "crossbow"]
+
+
+def scenario_of(tag, turn, hand_turn):
+    """The summary's scenario for a shot: still (a still* tag, rail and hand under 30 deg/s), sweep60 /
+    sweep180 (a sweep* tag, rail under 30 deg/s), turn (any other tag but sweep*, rail at 30+ deg/s; the
+    controller is held still there, though the comfort smoothing turns the hand in camera space), else
+    None."""
+    if tag.startswith("sweep"):
+        return tag if turn < 30 else None
+    if turn >= 30:
+        return "turn"
+    return "still" if tag.startswith("still") and hand_turn < 30 else None
+
+
+def median(xs):
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def summary(shots, projs, meshes):
+    out = []
+    w = out.append
+    rows = {}
+    for s in shots:
+        r = measure_shot(s)
+        if r is None or "drawn" not in r:
+            continue
+        sc = scenario_of(s["tag"], r["turn"], r["hand_turn"])
+        if sc:
+            rows.setdefault((weapon_name(s), sc), []).append(r)
+    weapons = sorted({k[0] for k in rows} | {p.get("key", "?") for p in projs} | {m.get("key", "?") for m in meshes},
+                     key=lambda k: (WEAPON_ORDER.index(k) if k in WEAPON_ORDER else 99, k))
+    w("Summary: bullets against the barrel as drawn in the frame on screen (deg; cm = the bias at the median impact distance)")
+    w("still: still* tags, rail and hand < 30 deg/s; turn: rail >= 30 deg/s (any tag but sweep*); sweepN: hand sweeping, "
+      "rail < 30 deg/s; ctr = each shot's bullets' mean direction against the drawn barrel, mean/p95; first pellet = a "
+      "multi-pellet weapon's unspread first pellet against the drawn barrel (bias +- 2se, max)")
+    w("%-12s %-9s %5s %7s %7s %6s %7s %11s %7s %13s %11s %8s  %s" % (
+        "weapon", "scenario", "shots", "bullets", "bias", "+-2se", "bias_cm", "ctr m/p95", "dist_m", "spread m/p95", "rail/hand", "hits", "verdict"))
+    for wp in weapons:
+        for sc in ("still", "turn", "sweep60", "sweep180"):
+            rs = rows.get((wp, sc))
+            if not rs:
+                continue
+            my, mp, b, se2 = mean_bias([r["drawn"] for r in rs])
+            dist = [x for r in rs for x in r["dist_m"]]
+            md = median(dist)
+            gs = stats([a for r in rs for a in r["game_spread"]])
+            verdict = still_verdict(b, se2) if sc == "still" else ""
+            if sc.startswith("sweep") and sc[5:].isdigit():
+                hd = [r["hand_df"] for r in rs if r["hand_df"] > 0.1]
+                if hd:
+                    verdict = "hand turned %.2f deg (median) from the frame drawn to the shot = %.0f ms at %s deg/s" % (
+                        median(hd), median(hd) / float(sc[5:]) * 1000, sc[5:])
+            fr = [r["first"] for r in rs if "first" in r]
+            if fr:  # multi-pellet: the unspread first pellet decides
+                fb = mean_bias(fr)
+                verdict = ("%s; " % verdict if verdict else "") + "first pellet %.3f +- %.3f, ctr max %.3f" % (
+                    fb[2], fb[3] if fb[3] != float("inf") else 0, max(f["centre"] for f in fr))
+                if sc == "still":
+                    verdict += " (%s)" % still_verdict(fb[2], fb[3])
+            cs = stats([r["drawn"]["centre"] for r in rs])
+            w("%-12s %-9s %5d %7d %7.3f %6.3f %7.2f %11s %7.1f %13s %11s %8s  %s" % (
+                wp, sc, len(rs), sum(r["n"] for r in rs), b, se2 if se2 != float("inf") else 0, math.tan(math.radians(b)) * md * 100,
+                "%.2f/%.2f" % cs[:2], md, ("%.2f/%.2f" % gs[:2]) if gs else "-",
+                "%.0f/%.0f" % (median([r["turn"] for r in rs]), median([r["hand_turn"] for r in rs])),
+                "%d/%d" % (sum(r["shootable"] for r in rs), sum(r["n"] for r in rs)), verdict))
+        rs = rows.get((wp, "turn"))
+        if rs:
+            parts = []
+            for lo, hi in TURN_BINS[1:]:
+                b = [r for r in rs if lo <= r["turn"] < hi]
+                if b:
+                    parts.append("%s: %d shots %.3f deg" % ("%g-%g" % (lo, hi) if hi != float("inf") else "%g+" % lo, len(b),
+                                                            mean_bias([r["drawn"] for r in b])[2]))
+            w("%-12s   turn by rail speed: %s" % ("", "; ".join(parts)))
+    if projs:
+        w("")
+        w("Projectiles (launch only, landing not logged): launch direction vs the drawn barrel (deg), launch point off the drawn barrel line (cm)")
+        pg = {}
+        for p in projs:
+            if p.get("aim") != "hand" or p.get("drawn") != "1" or p.get("launched") != "1":
+                continue
+            sc = scenario_of(p["tag"], float(p.get("turn", 0)), float(p.get("hand_turn", 0) or 0))
+            if sc:
+                pg.setdefault((weapon_name(p), sc), []).append(p)
+        for (wp, sc), ps in sorted(pg.items(), key=lambda kv: (kv[0][0], ["still", "turn", "sweep60", "sweep180"].index(kv[0][1]))):
+            ang, perp = [], []
+            for p in ps:
+                mo, md = vec(p["drawn_o"]), unit(vec(p["drawn_d"]))
+                o, d = vec(p["o"]), unit(vec(p["d"]))
+                ang.append(angle_deg(d, md))
+                perp.append(norm(cross(sub(o, mo), md)) * p["unit_m"] * 100)
+            w("%-12s %-9s %5d launches: direction %s deg, launch point off the line %s cm (mean/p95/max)" % (
+                wp, sc, len(ps), fmt3(stats(ang), 3), fmt3(stats(perp), 2)))
+    if meshes:
+        w("")
+        w("Mesh check (last per weapon; thresholds %.1f deg, %.1f cm across the axis)" % (MESH_MAX_DEG, MESH_MAX_CM))
+        last = {}
+        for m in meshes:
+            if m.get("source") == "builtin":
+                last[m.get("key")] = m
+        for wp in weapons:
+            m = last.get(wp)
+            if not m:
+                continue
+            perp_ok = float(m.get("perp_cm", "inf")) <= MESH_MAX_CM
+            if m.get("axis") == "1":
+                v = "PASS" if float(m["angle_deg"]) <= MESH_MAX_DEG and perp_ok else "FAIL"
+            elif m.get("muzzle") == "1":
+                v = "muzzle only: %s" % ("PASS" if perp_ok else "FAIL")
+            else:
+                v = "NO FIT (%s)" % m.get("why", "")
+            w("%-12s axis %s, angle %s deg, muzzle across %s cm, along %s cm, by %s: %s" % (
+                wp, "yes" if m.get("axis") == "1" else "no", m.get("angle_deg"), m.get("perp_cm"), m.get("along_cm"), m.get("method"), v))
+    return "\n".join(out)
+
+
 # ---------------------------------------------------------------- self-test
 
 def rotate(d, yaw_deg, pitch_deg):
@@ -341,13 +500,14 @@ def rotate(d, yaw_deg, pitch_deg):
 
 
 def synthetic_log():
-    """Magnum: still shots 0.1 deg right of the drawn barrel; turning (150 deg/s) shots 2 deg low.
+    """Magnum: still shots 0.1 deg right of the drawn barrel; turning (150 deg/s) shots 2 deg low; sweeping
+    (hand at 120 deg/s, rail still) shots 0.5 deg left.
     Pump: 6 pellets, 3 deg spread about a centre on the barrel. A crossbow launch and mesh lines."""
     rnd = random.Random(7)
     lines = ["[ 0.000] shotlog on frame=1 unit_m=0.01000"]
     sid = 0
 
-    def shot(key, pellets, tag_turn, yaw, pitch, spread):
+    def shot(key, pellets, tag_turn, yaw, pitch, spread, hand=0.0):
         nonlocal sid
         sid += 1
         mo = [rnd.uniform(-50, 50), 150, rnd.uniform(-50, 50)]
@@ -356,8 +516,8 @@ def synthetic_log():
         frame = 100 + sid * 3
         lines.append("[ 1.000] shotlog shot id=%d frame=%d weapon=GunArms_X key=%s data=0x1 type=1 kind=2 pellets=%d range=20000 aim=hand "
                      "o=%.3f,%.3f,%.3f d=%.6f,%.6f,%.6f fire_o=%.3f,%.3f,%.3f fire_d=%.6f,%.6f,%.6f fire_turn=%.1f drawn=1 drawn_frame=%d "
-                     "drawn_key=%s drawn_o=%.3f,%.3f,%.3f drawn_d=%.6f,%.6f,%.6f turn=%.1f turn_frame=%.1f" % (
-                         sid, frame, key, pellets, *mo, *md, *mo, *md, tag_turn, frame - 1, key, *mo, *md, tag_turn, tag_turn))
+                     "drawn_key=%s drawn_o=%.3f,%.3f,%.3f drawn_d=%.6f,%.6f,%.6f turn=%.1f turn_frame=%.1f hand_turn=%.1f barrel_turn=%.1f" % (
+                         sid, frame, key, pellets, *mo, *md, *mo, *md, tag_turn, frame - 1, key, *mo, *md, tag_turn, tag_turn, hand, hand + tag_turn))
         phase = rnd.uniform(0, 2 * math.pi)
         for k in range(pellets):
             a = phase + 2 * math.pi * k / pellets  # evenly round the centre: their mean is the centre
@@ -377,6 +537,9 @@ def synthetic_log():
     lines.append("[ 2.000] shotlog tag name=turning frame=500")
     for _ in range(10):
         shot("magnum", 1, 150.0, 0.0, -2.0, 0)
+    lines.append("[ 2.500] shotlog tag name=sweep60 frame=550")
+    for _ in range(10):
+        shot("magnum", 1, 0.0, -0.5, 0.0, 0, hand=120.0)
     lines.append("[ 3.000] shotlog shot id=999 frame=600 weapon=GunArms_Magnum key=magnum aim=mouse o=0,0,0 d=0,0,1 fire_o=- fire_d=- drawn=0")
     lines.append("[ 3.100] shotlog proj id=1000 frame=601 weapon=GunArms_CrossBow key=crossbow aim=hand launched=1 speed=3000.0 o=0.5,0,0 "
                  "d=0,0,1 fire_o=0,0,0 fire_d=0,0,1 drawn=1 drawn_frame=600 drawn_key=crossbow drawn_o=0,0,0 drawn_d=0,0,1 turn=0 turn_frame=0")
@@ -397,7 +560,7 @@ def selftest():
         if not cond:
             fails.append(what)
 
-    check(len(shots) == 26 and len(projs) == 1 and len(meshes) == 2, "parsed counts")
+    check(len(shots) == 36 and len(projs) == 1 and len(meshes) == 2, "parsed counts")
     rs = [measure_shot(s) for s in shots]
     mag_still = [r for r, s in zip(rs, shots) if r and s["key"] == "magnum" and s["tag"] == "still"]
     mag_turn = [r for r, s in zip(rs, shots) if r and s["key"] == "magnum" and s["tag"] == "turning"]
@@ -417,6 +580,21 @@ def selftest():
     check(all(r["set"]["centre"] < 1e-3 for r in mag_still), "set ray on the barrel")
     check("mesh smg FAIL" in text and "mesh magnum PASS" in text, "mesh verdicts")
     check("launch point off the drawn line 0.50/0.50/0.50 cm" in text, "projectile offset")
+    check(all(abs(r["dist_m"][0] - 10.0) < 1e-3 for r in mag_still), "impact distance 10 m")
+    # The summary: tag "still" (rail 0) -> still, "turning" at 150 deg/s -> turn; the sweep shots (hand
+    # at 120 deg/s, 0.5 deg left) -> sweep60.
+    sm = summary(shots, projs, meshes)
+    still_row = [l for l in sm.splitlines() if l.startswith("magnum") and " still " in l]
+    turn_row = [l for l in sm.splitlines() if l.startswith("magnum") and " turn " in l]
+    sweep_row = [l for l in sm.splitlines() if l.startswith("magnum") and " sweep60 " in l]
+    check(len(still_row) == 1 and " 0.100 " in still_row[0] and still_row[0].rstrip().endswith("PASS"), "summary still row")
+    check(len(turn_row) == 1 and " 2.000 " in turn_row[0], "summary turn row")
+    check(len(sweep_row) == 1 and " 0.500 " in sweep_row[0] and " 0/120 " in sweep_row[0], "summary sweep row")
+    check("100-300: 10 shots 2.000 deg" in sm, "summary turn bins")
+    check("hand's angular speed" in text, "hand speed table")
+    check(all("first" in r and abs(r["first"]["centre"] - 3.0) < 0.01 for r in pump), "pump first pellet (pellet 0, 3 deg out here)")
+    print(sm)
+    print()
     print(text)
     print()
     if fails:
@@ -428,17 +606,23 @@ def selftest():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("log", nargs="?")
+    ap.add_argument("log", nargs="*", help="one or more logs (each its own game run: shot ids restart)")
     ap.add_argument("--out")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--summary", action="store_true", help="one table per weapon and scenario (still, turn, sweep) first")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
     if not a.log:
         ap.error("a log file or --selftest")
-    with open(a.log, encoding="utf-8", errors="replace") as f:
-        shots, projs, meshes, overrides = parse(f)
+    shots, projs, meshes, overrides = [], [], [], []
+    for path in a.log:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for acc, part in zip((shots, projs, meshes, overrides), parse(f)):
+                acc.extend(part)
     text = report(shots, projs, meshes, overrides)
+    if a.summary:
+        text = summary(shots, projs, meshes) + "\n\n" + text
     print(text)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:

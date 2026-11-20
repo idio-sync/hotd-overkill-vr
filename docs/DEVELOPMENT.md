@@ -219,8 +219,28 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   as `mesh_override`). `.venv\Scripts\python -I tools\gun_accuracy.py hovr\probe.log` (the test
   copy's development log; `hovr.log` in a release install) writes the per-weapon, per-tag report:
   bias against the drawn and the fire-time barrel, the game's spread, bias by turn speed, the mesh
-  check, the thresholds; `--selftest` checks it on a synthetic log. The ray cast hook (0x5514E0,
+  check, the thresholds; `--selftest` checks it on a synthetic log; `--summary` puts one table
+  first, per weapon and scenario: still (`still*` tags, rail and hand under 30 deg/s), turn (rail
+  at 30+ deg/s, hand under 30), sweep60/sweep180 (`sweep*` tags, rail under 30). Each shot line also
+  carries `hand_turn` (the hand's pointing axis in camera space) and `barrel_turn` (the drawn
+  barrel in the world), deg/s between the last two frames drawn. The ray cast hook (0x5514E0,
   FireBullets' call at 0x50D279) is installed in the development harness only.
+  The full run, `tools\gun_accuracy.ps1` (fake runtime, Naked Terror; phases so the loadout can be
+  checked between them): `-Phase boot` starts the test copy, makes **every weapon available and
+  bought in memory** (player 1's profile `[[0x99B748]+0x228]`: `+0x5C` available mask, `+0x60`
+  purchased mask, bit = weapon id: 1 magnum, 2 hand cannon, 4 pump, 5 auto shotgun, 6 SMG, 8
+  rifle, 9 and 10 crossbow and Gwendolyn, 11 minigun, as the game's own "Unlock Everything" script
+  function sets them, 0x424450; with the existing `peek`/`poke`, nothing written to the save by the
+  script) and goes to Naked Terror's loadout, captured to `hovr\gunacc_loadout_screen.png`;
+  `-Phase loadout -Clicks 'R2,R2,L1'` clicks the loadout's arrows (slot 1 or 2, right or left; the
+  list skips the other slot's weapon; slot 2 also has EMPTY) and captures again; `-Phase play
+  -Weapons 'magnum,pump'` (the two slots in order) starts the level with `vr god 1` and the shot log,
+  and per weapon fires `still_neutral`, `still_edge` (release_check's two poses), `still_seek` (held
+  on a zombie), `sweep60`, `sweep180` (the controller swept ±25 degrees while firing), `vr
+  gunmeshcheck`, then `turn` (firing on through the level, re-aimed at zombies every 6 s), B to the
+  next weapon; `-Phase stop`. One boot per pair: five runs for the nine weapons. The game may write
+  the test copy's save (`hovr\AppData\sega\typing of the dead overkill\fnhotd`) at a level's end:
+  back it up first.
 - Comfort: `vr arms|shake|bob 0|1` (switch `game_arms` / `camera_shake` / `head_bob` live),
   `vr comfort` (arms draws hidden, largest shake offsets, bob amplitudes, edge-pan state),
   `vr wiiview 1` (let the game's edge-pan through, to compare), `vr camlog N` (camera position and

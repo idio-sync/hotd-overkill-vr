@@ -511,9 +511,9 @@ static void barrel_fields(const vr::Ray* fire, char* out, size_t n) {
     if (gunmodel_last_drawn(&d))
         snprintf(out + len, n - len,
                  " drawn=1 drawn_frame=%u drawn_key=%s drawn_o=%.3f,%.3f,%.3f drawn_d=%.6f,%.6f,%.6f drawn_hand=%.4f,%.4f,%.4f,%.5f,%.5f,%.5f "
-                 "turn=%.1f turn_frame=%.1f",
+                 "turn=%.1f turn_frame=%.1f hand_turn=%.1f barrel_turn=%.1f",
                  d.frame, d.key, d.muzzle[0], d.muzzle[1], d.muzzle[2], d.dir[0], d.dir[1], d.dir[2], d.hand[0], d.hand[1], d.hand[2], d.hand[3],
-                 d.hand[4], d.hand[5], d.turn, d.turn_frame);
+                 d.hand[4], d.hand[5], d.turn, d.turn_frame, d.hand_turn, d.barrel_turn);
     else snprintf(out + len, n - len, " drawn=0");
 }
 
@@ -609,7 +609,7 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
     }
     if (player_shot) shot_feedback(owner);
     if (shotlog && player_shot) {
-        char wf[160], bf[640];
+        char wf[160], bf[800];
         weapon_fields(reinterpret_cast<uintptr_t>(self), wf, sizeof wf);
         barrel_fields(fire_ok ? &fire_ray : nullptr, bf, sizeof bf);
         const float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]), in = n > 0 ? 1 / n : 0;
@@ -645,7 +645,7 @@ static bool seh_proj_offset(float out[4]) {
 // weapon's speed (data+0x258); when it has no projectile to launch it returns early and the
 // origin is unchanged (`launched=0`). Where it lands is not logged (no collision hook).
 static void log_projectile(uintptr_t weapon, const float* launch, const float before[3], const float* dir, const vr::Ray* fire) {
-    char wf[160], bf[640];
+    char wf[160], bf[800];
     weapon_fields(weapon, wf, sizeof wf);
     barrel_fields(fire, bf, sizeof bf);
     float speed = 0;

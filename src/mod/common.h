@@ -190,6 +190,8 @@ struct DrawnBarrel {
     float muzzle[3] = {}, dir[3] = {};  // world (game units), dir unit
     float hand[6] = {};          // the hand pose drawn with: position (m) and pointing axis, camera space (LH)
     float turn = 0, turn_frame = 0;  // the rail camera's turn speed, deg/s (smoothed, this frame)
+    float hand_turn = 0;         // the hand's pointing axis in camera space, deg/s since the previous frame drawn
+    float barrel_turn = 0;       // the drawn barrel's world direction, deg/s since the previous frame drawn
     char key[16] = {};           // the weapon (kDefs key)
 };
 bool gunmodel_last_drawn(DrawnBarrel* out);  // the last frame drawn (false: none since the shot log went on)
