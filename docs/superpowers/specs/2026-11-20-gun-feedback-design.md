@@ -206,6 +206,25 @@ Considered in conversation:
 - release_check 11/11.
 - Test copy restored by hash at the end; a test DLL copied to the session scratchpad.
 
+## Decided after review (my calls, open to correction)
+
+- **Stages**: stage 1 ends with a test DLL for the user (in the session scratchpad); stage 2 then
+  starts straight away without waiting for their verdict, and adapts if their stage 1 feedback
+  changes the shared pieces. Still no push, tag or release.
+- **Reloads**: the hand cannon's cylinder swings out to the left on its crane (about an axis
+  parallel to the bore, below-left of the cylinder, found from the crane piece) at the start of
+  the reload and back in as the reload completes (the same timing the magazine animation uses); if
+  the crane pivot can't be found cleanly it stays in place. The pump's forend racks back and forward
+  once at the end of a reload (with the "forend closes" click). Neither ever drops like a magazine.
+  `clip_handcannon` / `clip_pump` keep their meaning only as on/off: 0 = hidden (as before), any
+  other value = drawn in place as a part (default on).
+- **Directions**: the cylinder turns counter-clockwise seen from behind the gun (the shooter's
+  view; Smith & Wesson style). The minigun spins clockwise seen from behind. The sign in model
+  space must be checked with a capture from behind (not reasoned out), since model_to_gun flips
+  handedness.
+- The meshes and pictures from the recon are in
+  C:\Users\Virtual\AppData\Local\Temp\claude\200e7d2c1826a451\fa217c89-0c2a-434e-a7ab-87c89b64c1ca\scratchpad\meshparts\.
+
 ## Left to the builder
 
 - The exact boxes for selecting each part, pivots for triggers/hammers and travel distances within
