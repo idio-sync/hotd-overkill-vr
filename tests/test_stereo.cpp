@@ -597,6 +597,17 @@ static void test_drawn_barrel_is_the_shot_ray() {
     for (int i = 0; i < 3; ++i) CHECK_NEAR(a.d[i], b.d[i], 1e-5);
 }
 
+// Shots use the hand of the frame on screen while that record is recent, else the latest.
+static void test_use_drawn_pose() {
+    CHECK(use_drawn_pose(true, 100, 101));   // the usual case: fired one frame after the frame drawn
+    CHECK(use_drawn_pose(true, 100, 100));   // same frame
+    CHECK(use_drawn_pose(true, 100, 100 + kDrawnPoseMaxAge));
+    CHECK(!use_drawn_pose(true, 100, 101 + kDrawnPoseMaxAge));  // stale: flat screen, menus
+    CHECK(!use_drawn_pose(false, 100, 101));  // none recorded, or the hand was not tracked
+    CHECK(!use_drawn_pose(true, 102, 101));   // from the future: not used
+    CHECK(use_drawn_pose(true, 0xFFFFFFFFu, 1));  // across the counter's wrap
+}
+
 static void test_clip_out_fraction() {
     // Not reloading, nothing out: seated.
     CHECK_NEAR(clip_out_fraction(false, 0.5f, 3, 0), 0, 0);
@@ -1130,6 +1141,7 @@ int main() {
     test_gun_in_hand_holds_grip_and_barrel();
     test_drawn_barrel_is_the_shot_ray();
     test_clip_out_fraction();
+    test_use_drawn_pose();
     test_flip_z_conversions();
     test_yaw_only_anchor();
     test_tangents_from_openvr();

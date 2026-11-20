@@ -320,8 +320,12 @@ static bool update_eyes() {
     e.p_game = vr::from_d3dx(p);
     e.view = vr::from_d3dx(v);
     // The rail comfort filter steps once per stereo frame, with the view of the frame's first
-    // scene draw (the rail camera; later views in the same frame, if any, don't move it).
-    if (new_frame) comfort_rail_frame(e.view);
+    // scene draw (the rail camera; later views in the same frame, if any, don't move it). The gun
+    // hand this frame is drawn with is kept for the shots (vrsys_hand_on_screen).
+    if (new_frame) {
+        comfort_rail_frame(e.view);
+        vrsys_hand_drawn();
+    }
     vr::Proj pg;
     if (!vr::proj_from_matrix(e.p_game, &pg)) {
         static int warned;

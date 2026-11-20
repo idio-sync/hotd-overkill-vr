@@ -306,6 +306,36 @@ bool vrsys_hand_in_game(vr::Mat4* pose_lh) {
     return g_hand_valid;
 }
 
+// The gun hand of the last stereo frame drawn: vrsys_hand_in_game at the frame's first scene draw
+// (stereo.cpp, after the rail comfort filter's step), the pose that frame's eyes, gun and aim are
+// drawn with, and gun_frame_no() then. The shots read it a frame later, after WaitGetPoses has
+// already given a newer hand (gun.cpp).
+static vr::Mat4 g_drawn_hand = vr::identity();
+static bool g_drawn_hand_valid;  // recorded, and the hand was tracked then
+static unsigned g_drawn_hand_frame;
+
+void vrsys_hand_drawn() {
+    vr::Mat4 h;
+    const bool valid = vrsys_hand_in_game(&h);
+    std::lock_guard lock(g_hand_mx);
+    g_drawn_hand = h;
+    g_drawn_hand_valid = valid;
+    g_drawn_hand_frame = gun_frame_no();
+}
+
+// The hand on screen: the last frame drawn's (vr::use_drawn_pose: recent enough, and tracked
+// then), else the latest.
+bool vrsys_hand_on_screen(vr::Mat4* pose_lh) {
+    {
+        std::lock_guard lock(g_hand_mx);
+        if (vr::use_drawn_pose(g_drawn_hand_valid, g_drawn_hand_frame, gun_frame_no())) {
+            *pose_lh = g_drawn_hand;
+            return true;
+        }
+    }
+    return vrsys_hand_in_game(pose_lh);
+}
+
 bool vrsys_hand_in_anchor(vr::Mat4* pose_rh) {
     std::lock_guard lock(g_hand_mx);
     *pose_rh = vr::mul(vr::rigid_inverse(g_hand_anchor), g_hand);

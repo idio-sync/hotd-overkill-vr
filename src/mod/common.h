@@ -390,6 +390,8 @@ vr::Mat4 vrsys_eye_in_anchor(int eye);  // right-handed, metres
 bool vrsys_eye(int eye, vr::Mat4* pose_lh, float tan[4]);  // false: sim (no headset tangents)
 vr::Mat4 vrsys_panel_in_anchor(bool screen);
 bool vrsys_hand_in_game(vr::Mat4* pose_lh);    // the gun hand in the game camera's space (LH, metres)
+void vrsys_hand_drawn();                        // stereo.cpp, once per stereo frame: keep the hand it is drawn with
+bool vrsys_hand_on_screen(vr::Mat4* pose_lh);   // that hand (recent frame), else vrsys_hand_in_game's
 bool vrsys_hand_in_anchor(vr::Mat4* pose_rh);  // the gun hand relative to the anchor (RH, metres)
 bool vrsys_head_in_anchor(vr::Mat4* pose_rh);
 bool vrsys_controller(bool gun_hand, CtlState* out);  // openvr: the controller; sim: scripted buttons

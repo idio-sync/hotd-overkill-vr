@@ -6,6 +6,13 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Shots while the hand moves go where the drawn gun pointed**: the shot, the crosshair and the
+  hit marker now use the hand pose of the frame on screen instead of one about 15 ms newer, which
+  put shots ahead of the barrel while sweeping onto a target (magnum, fake runtime: about 1 deg at
+  60 deg/s and 2.5 deg at 180 deg/s before, 0.00 deg now; still aim unchanged at 0.000 deg).
+
 ## [0.1.4] - 2026-11-19
 
 Fixes for anti-aliasing switched off or resolutions other than 1680x1050 in the game's options,

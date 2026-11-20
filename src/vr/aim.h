@@ -56,4 +56,12 @@ bool cursor_on_line(const float base[3], const float du[3], const float dv[3], c
 // forward axis along `dir_rh` (a direction in the frame's parent space).
 void yaw_pitch_towards(const Mat4& frame_rh, const float dir_rh[3], float* yaw, float* pitch);
 
+// Shots aim with the gun hand of the frame on screen (the pose its gun and eyes were drawn with),
+// recorded at frame `drawn_frame`. At frame `now` that record is still the one to use if one was
+// made and it is at most `max_age` frames old (a shot normally comes one frame after the frame
+// drawn); otherwise (flat screens, menus, the first frames, no stereo frame for a while) the
+// latest pose is used.
+constexpr unsigned kDrawnPoseMaxAge = 3;
+bool use_drawn_pose(bool recorded, unsigned drawn_frame, unsigned now, unsigned max_age = kDrawnPoseMaxAge);
+
 }  // namespace hv::vr

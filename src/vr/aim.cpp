@@ -99,4 +99,9 @@ void yaw_pitch_towards(const Mat4& frame, const float dir[3], float* yaw, float*
     *yaw = std::atan2(l[0], -l[2]);
 }
 
+bool use_drawn_pose(bool recorded, unsigned drawn_frame, unsigned now, unsigned max_age) {
+    // Unsigned: a record from the future (it can't be) reads as very old.
+    return recorded && now - drawn_frame <= max_age;
+}
+
 }  // namespace hv::vr

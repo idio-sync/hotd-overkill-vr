@@ -29,9 +29,15 @@
 //            hooked for the gun accuracy test's shot log (`vr shotlog 1`), FireBullets' call at
 //            0x50D279 (return address 0x50D27E) logged per pellet; nothing is changed.
 //
-// The hand's world ray: the gun hand in the game camera's space (vrsys_hand_in_game, the same
-// anchor transform as the eyes) through the inverse of the engine's view matrix (0x9C7E48) of the
-// last frame drawn - the frame the player aimed at.
+// The hand's world ray: the gun hand in the game camera's space (the same anchor transform and
+// rail comfort rotation as the eyes) through the inverse of the engine's view matrix (0x9C7E48) of
+// the last frame drawn - the frame the player aimed at. The hand is that frame's too
+// (vrsys_hand_on_screen: the pose kept at its first scene draw, gun model shown or not): the game
+// reads the trigger and fires a frame later, when WaitGetPoses has already given a newer hand, and
+// that newer one put shots of a moving hand 1 deg (60 deg/s) to 3 deg (180 deg/s) ahead of the
+// drawn barrel. The latest hand (vrsys_hand_in_game) when no stereo frame was drawn in the last
+// few (flat screens, menus, first frames). Shots, the projectile, the sphere checks and the
+// per-frame aim (cursor, hit marker) all use this one ray, so they agree.
 //
 // The probe's dev overrides (`aimdir`, `aimorigin`) still apply on top.
 #include "common.h"
@@ -220,10 +226,10 @@ bool gun_aim_active() {
 }
 
 // The shot ray: the barrel line of the gun model in the hand (muzzle origin, barrel direction) when
-// one is shown, otherwise the controller's own pointing ray.
+// one is shown, otherwise the controller's own pointing ray; the hand as on screen (see the top).
 static bool hand_world_ray(vr::Ray* out) {
     vr::Mat4 hand, view;
-    if (!vrsys_hand_in_game(&hand) || !read_view(&view)) return false;
+    if (!vrsys_hand_on_screen(&hand) || !read_view(&view)) return false;
     vr::Ray cam;
     if (!gunmodel_barrel(hand, &cam)) cam = vr::pose_ray_lh(hand);
     return vr::camera_ray_to_world(view, cam, g_vr.unit_m, out);
@@ -453,7 +459,8 @@ static void shot_feedback(uintptr_t player) {
 // Lines (all `shotlog ...`, key=value, vectors as x,y,z, world positions in game units):
 //   shot   once per player-1 FireBullets call from the weapon's fire: the ray the mod set (o, d:
 //          what FireBullets got, spread-free), the barrel line hand_world_ray gave at fire time
-//          (fire_o, fire_d) and the hand pose then, and the barrel of the last frame drawn before
+//          (fire_o, fire_d) and the latest hand pose then (fire_hand, newer than the one shot
+//          with while the hand moves), and the barrel of the last frame drawn before
 //          the shot (drawn_*: gunmodel.cpp, from the world matrix the gun was drawn with) with
 //          its frame number and the rail camera's turn speed.
 //   pellet every ray cast FireBullets makes for that shot (0x5514E0, called from 0x50D279), the
