@@ -264,6 +264,8 @@ static std::vector<WeaponParts> build_table() {
         w.clip = kPumpClip, w.n_clip = int(std::size(kPumpClip));
         w.clip_part = true, set3(w.clip_rest, 32.5f, 7.0f, 0);
         w.rack_travel = 8.5f;
+        // The game lets the pump fire again ~575 ms after a shot (measured): racked by 460 ms.
+        w.rack_start = 0.12f, w.rack_back = 0.15f, w.rack_hold = 0.04f, w.rack_fwd = 0.15f;
         set3(w.trigger_pivot, 4.8f, 6.45f, -0.48f), w.trigger_deg = 16;
         t.push_back(w);
     }
@@ -301,6 +303,7 @@ static std::vector<WeaponParts> build_table() {
         WeaponParts w = make("crossbow", 1, 0, 0);
         w.gun = kCrossbowGun, w.n_gun = int(std::size(kCrossbowGun));
         w.slide_travel = 15.34f, set3(w.slide_dir, 1, 0, 0), w.slide_is_string = true;
+        w.string_draw = 0.88f;  // drawn again by ~0.95 s: the game fires it again ~1.02 s after a shot (measured)
         set3(w.trigger_pivot, 6.6f, 5.7f, -0.77f), w.trigger_deg = 16;
         t.push_back(w);
     }

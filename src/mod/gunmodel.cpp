@@ -786,9 +786,7 @@ void gunmodel_shot(uintptr_t weapon) {
         s.t_prev = s.t, s.t = t, ++s.n;
         r = s;
     }
-    static int logged;
-    if (logged < 300) {
-        ++logged;
+    if (r.n <= 40) {  // the first 40 shots of each weapon object (the minigun fires ~40 a second)
         char name[64] = "?", key[16] = "?";
         gunmodel_weapon_name(weapon, name, key);
         if (r.n > 1) logf("gun anim: shot %u of %s (%p), %.0f ms after the one before", r.n, key, reinterpret_cast<void*>(weapon), (r.t - r.t_prev) * 1000);
@@ -1129,7 +1127,7 @@ void gunmodel_log() {
          m ? m->gun.name : "(no model)");
     if (m)
         logf("  moving parts (gun_parts=%d): %s; gun mesh %s, clip mesh %s; slide %s", int(g_vr.gun_parts), m->wp ? "described" : "none",
-             m->gun_parts_ok ? "split" : "still", !m->wp || !m->wp->clip_part ? "-" : m->clip_ok ? "in place" : "hidden",
+             !m->wp || !m->wp->n_gun ? "-" : m->gun_parts_ok ? "split" : "still (unexpected pieces)", !m->wp || !m->wp->clip_part ? "-" : m->clip_ok ? "in place" : "hidden",
              m->anim.locked ? "locked back" : "free");
     for (auto& [k, c] : g_cfg)
         logf("  %-12s show %d clip %d grip %.2f,%.2f,%.2f barrel %.3f,%.3f,%.3f muzzle %.2f,%.2f,%.2f hold %.1f,%.1f", k.c_str(), int(c.show),
