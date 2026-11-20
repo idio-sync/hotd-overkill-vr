@@ -35,7 +35,9 @@
 //   ctlrel L|R X Y Z YAW PITCH [MS]  controller relative to the head: offset in the head's frame
 //                                    (x right, y up, z back), direction relative to the head's
 //   aim L|R X Y Z                    point a controller at a tracking-space point
-//   aimov L|R KEY PX PY              point a controller at texture pixel PX, PY of overlay KEY
+//   aimov L|R KEY PX PY [REFW REFH]  point a controller at texture pixel PX, PY of overlay KEY
+//                                    (given REFW REFH: PX, PY are pixels of a REFW x REFH texture,
+//                                    scaled to the overlay's real size)
 //   btn L|R NAME [MS]                press (trigger, grip, a, b, stick, system) for MS (default 150)
 //   hold L|R NAME / release L|R NAME|all
 //   axis L|R N X Y                   raw axis values
@@ -706,8 +708,8 @@ void run_command(const std::string& line) {
         aim_at(hand_of(h), p);
     } else if (cmd == "aimov") {
         std::string h, key;
-        double px = 0, py = 0;
-        ss >> h >> key >> px >> py;
+        double px = 0, py = 0, rw = 0, rh = 0;
+        ss >> h >> key >> px >> py >> rw >> rh;  // REFW REFH optional (left 0 when absent)
         Overlay* o = find_overlay(key);
         D3D11_TEXTURE2D_DESC d{};
         if (!o || !o->tex || o->transform != 1) {
@@ -716,6 +718,10 @@ void run_command(const std::string& line) {
         }
         o->tex->GetDesc(&d);
         const double tw = d.Width * (o->bounds.uMax - o->bounds.uMin), th = d.Height * (o->bounds.vMax - o->bounds.vMin);
+        if (rw > 0 && rh > 0) {  // PX, PY given on a REFW x REFH texture: scale to this one
+            px = (px + 0.5) * tw / rw - 0.5;
+            py = (py + 0.5) * th / rh - 0.5;
+        }
         const double w = o->width, hgt = w * th / tw / o->texel_aspect;
         const double local[3] = {((px + 0.5) / tw - 0.5) * w, (0.5 - (py + 0.5) / th) * hgt, 0};
         double p[3];

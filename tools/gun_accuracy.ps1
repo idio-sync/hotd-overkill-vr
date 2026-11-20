@@ -75,7 +75,8 @@ function Invoke-Mod([string[]]$lines, [int]$seconds) {
     Send-Mod (@($lines) + "log $m")
     Wait-Log ([regex]::Escape("log: $m")) $seconds | Out-Null
 }
-function Click([int]$x, [int]$y) { @("fakevr aimov R hovr.screen $x $y", 'wait 300', 'fakevr btn R trigger 150') }
+# Menu positions are 1920x1200 back-buffer pixels; fakevr scales them to the real screen overlay.
+function Click([int]$x, [int]$y) { @("fakevr aimov R hovr.screen $x $y 1920 1200", 'wait 300', 'fakevr btn R trigger 150') }
 
 # Fire styles: semi = one trigger pull per $ms, $mag pulls then a reload; auto = hold the trigger
 # $ms, release, reload.

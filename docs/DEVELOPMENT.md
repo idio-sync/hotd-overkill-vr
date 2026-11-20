@@ -334,8 +334,9 @@ first calls to `hovr\fakevr.log`.
   mod's command file (in order with its commands). `head X Y Z YAW PITCH ROLL [MS]` (yaw + right,
   pitch + up, roll + right ear down; MS = move there over that time), `look`, `headpos`,
   `ctl L|R X Y Z YAW PITCH ROLL [MS]`, `ctlrel L|R X Y Z YAW PITCH [MS]` (relative to the head),
-  `aim L|R X Y Z`, `aimov L|R KEY PX PY` (point at an overlay's texture pixel, e.g. a menu item on
-  `hovr.screen`), `btn L|R NAME [MS]`, `hold`/`release`, `axis`, `connect L|R 0|1`, `axes 0|1`,
+  `aim L|R X Y Z`, `aimov L|R KEY PX PY [REFW REFH]` (point at an overlay's texture pixel, e.g. a
+  menu item on `hovr.screen`; with REFW REFH the pixel is given on a texture of that size and
+  scaled to the real one, so a script written at 1920x1200 works at any back buffer), `btn L|R NAME [MS]`, `hold`/`release`, `axis`, `connect L|R 0|1`, `axes 0|1`,
   `tip 0|1`, `ipd`, `cant`, `hz`, `fov`, `wait MS`, `state`, `haptics`. Full list at the top of
   `src/fakevr/fakevr.cpp`. In openvr mode with the fake runtime, `vr handat`, `vr handscreen` and
   `vr handseek` point the scripted controller. `tools\scripts\to_naked_terror_fakevr.txt` plays
