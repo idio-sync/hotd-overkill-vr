@@ -103,7 +103,8 @@ struct HapticStep {
 const HapticStep* haptic_steps(Haptic h, int* n);
 
 // Plays patterns: several can overlap (the strongest due step wins a frame), at most one pulse
-// per frame, scaled by `haptics` (pulse lengths times the scale, capped at 3999 us; 0 = off).
+// per frame, scaled by `haptics` (pulse lengths times the scale, capped at 3999 us; 0 = off). A
+// pattern's times count from the first tick after it was queued (plus its delay).
 class HapticPlayer {
 public:
     void play(Haptic h, double now, float delay_ms = 0);
@@ -114,7 +115,9 @@ public:
 
 private:
     struct Entry {
-        double start;
+        double start;  // queued at; from its first tick: when its steps' times count from
+        double delay;  // seconds
+        bool started;
         const HapticStep* steps;
         int n;
         uint32_t fired;  // bit per step: its first pulse was given

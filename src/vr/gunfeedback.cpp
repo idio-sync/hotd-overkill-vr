@@ -42,14 +42,14 @@ const char* haptic_name(Haptic h) {
 // small and fast. Hit ticks come after the shot's own pattern (shotguns: after the second thump;
 // the minigun: in the gap before its next shot, ~25 ms later).
 static const FeedbackDef kFeedback[] = {
-    {"magnum", 6.0f, 2.2f, false, 4.0f, 1.5f, 0.016f, 1.3f, Haptic::pistol, 50},
-    {"gold_magnum", 6.0f, 2.2f, false, 4.0f, 1.5f, 0.016f, 1.3f, Haptic::pistol, 50},
-    {"handcannon", 9.0f, 2.0f, false, 7.0f, 2.5f, 0.020f, 1.3f, Haptic::handcannon, 60},
-    {"pump", 10.0f, 2.4f, false, 6.5f, 3.0f, 0.020f, 1.3f, Haptic::shotgun, 110},
-    {"autoshotgun", 9.0f, 2.4f, false, 5.0f, 2.5f, 0.018f, 1.4f, Haptic::shotgun, 110},
-    {"smg", 4.5f, 1.8f, true, 1.5f, 0.6f, 0.012f, 1.6f, Haptic::smg, 45},
-    {"rifle", 6.0f, 2.6f, false, 2.0f, 1.0f, 0.014f, 1.6f, Haptic::rifle, 30},
-    {"minigun", 5.0f, 2.0f, true, 0.8f, 0.4f, 0.010f, 1.6f, Haptic::minigun, 14},
+    {"magnum", 9.0f, 2.0f, false, 4.0f, 1.5f, 0.016f, 1.3f, Haptic::pistol, 50},
+    {"gold_magnum", 9.0f, 2.0f, false, 4.0f, 1.5f, 0.016f, 1.3f, Haptic::pistol, 50},
+    {"handcannon", 13.0f, 1.8f, false, 7.0f, 2.5f, 0.020f, 1.3f, Haptic::handcannon, 65},
+    {"pump", 14.0f, 2.2f, false, 6.5f, 3.0f, 0.020f, 1.3f, Haptic::shotgun, 120},
+    {"autoshotgun", 13.0f, 2.2f, false, 5.0f, 2.5f, 0.018f, 1.4f, Haptic::shotgun, 120},
+    {"smg", 7.0f, 1.8f, true, 1.5f, 0.6f, 0.012f, 1.6f, Haptic::smg, 45},
+    {"rifle", 8.0f, 2.4f, false, 2.0f, 1.0f, 0.014f, 1.6f, Haptic::rifle, 30},
+    {"minigun", 8.0f, 2.0f, true, 0.8f, 0.4f, 0.010f, 1.6f, Haptic::minigun, 14},
     {"crossbow", 0.0f, 0.0f, false, 1.5f, 0.6f, 0.016f, 1.3f, Haptic::crossbow, 0},
 };
 
@@ -135,19 +135,19 @@ std::vector<uint32_t> flash_star_image(int size) {
         for (int x = 0; x < size; ++x) {
             const float dx = (x + 0.5f) / size * 2 - 1, dy = (y + 0.5f) / size * 2 - 1;
             const float r = std::sqrt(dx * dx + dy * dy), a = std::atan2(dy, dx);
-            const float core = std::exp(-(r / 0.13f) * (r / 0.13f));
-            const float glow = 0.55f * std::exp(-(r / 0.36f) * (r / 0.36f));
+            const float core = std::exp(-(r / 0.22f) * (r / 0.22f));
+            const float glow = 0.8f * std::exp(-(r / 0.5f) * (r / 0.5f));
             float spike = 0;
             for (int k = 0; k < 5; ++k) {
                 const float L = spike_len[k];
                 if (r >= L) continue;
                 float da = std::fabs(std::remainder(a - spike_deg[k] * kPi / 180, 2 * kPi));
                 const float across = da * r;                  // distance from the spike's centre line
-                const float w = 0.11f * (1 - r / L) + 0.012f;  // tapering to a point
+                const float w = 0.15f * (1 - r / L) + 0.012f;  // tapering to a point
                 spike = std::fmax(spike, std::exp(-(across / w) * (across / w)) * std::pow(1 - r / L, 0.8f));
             }
             const float edge = clamp01((1 - r) / 0.12f);  // nothing at the quad's edge
-            const float b = (core + glow + 0.9f * spike) * edge;
+            const float b = (core + glow + 1.1f * spike) * edge;
             px[size_t(y) * size + x] = flame(b, core + 0.4f * spike);
         }
     return px;
@@ -173,9 +173,9 @@ std::vector<uint32_t> flash_plume_image(int w, int h) {
 // Legacy pulses: strength is felt by length (at most 3999 us) and a frame gives at most one, so a
 // thump is a run of long pulses over a few frames (3-4 at 120 Hz).
 
-static const HapticStep kPistol[] = {{0, 20, 3999}, {20, 15, 1800}};
-static const HapticStep kHandCannon[] = {{0, 30, 3999}, {30, 20, 2000}};
-static const HapticStep kShotgun[] = {{0, 30, 3999}, {55, 25, 3999}, {80, 20, 1500}};
+static const HapticStep kPistol[] = {{0, 22, 3999}, {22, 16, 1800}};
+static const HapticStep kHandCannon[] = {{0, 35, 3999}, {35, 20, 2000}};
+static const HapticStep kShotgun[] = {{0, 35, 3999}, {60, 30, 3999}, {90, 20, 1500}};
 static const HapticStep kRifle[] = {{0, 12, 3200}, {12, 8, 1400}};
 static const HapticStep kSmg[] = {{0, 25, 2600}};
 static const HapticStep kMinigun[] = {{0, 10, 2000}};
@@ -208,13 +208,16 @@ void HapticPlayer::play(Haptic h, double now, float delay_ms) {
     const HapticStep* s = haptic_steps(h, &n);
     if (!s || n <= 0 || n > 32) return;
     if (active_.size() >= 32) active_.erase(active_.begin());
-    active_.push_back({now + std::fmax(0.f, delay_ms) / 1000.0, s, n, 0});
+    active_.push_back({now, std::fmax(0.f, delay_ms) / 1000.0, false, s, n, 0});
 }
 
 unsigned HapticPlayer::tick(double now, float scale) {
     unsigned best = 0;
     for (size_t i = 0; i < active_.size();) {
         Entry& e = active_[i];
+        // A pattern's clock starts at the first frame after it was queued (shots are queued mid-frame,
+        // so its first step always gets that frame), its delay counted from then.
+        if (!e.started) e.started = true, e.start = (std::max)(now, e.start) + e.delay;
         const float el = float((now - e.start) * 1000);
         bool done = true;
         for (int k = 0; k < e.n; ++k) {

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../vr/aim.h"
+#include "../vr/gunfeedback.h"
 #include "../vr/stereo.h"
 
 struct ID3D11Texture2D;
@@ -71,7 +72,7 @@ struct VrConfig {
     bool left_hand = false;     // hand = left: the gun is the left controller
     float hand_pitch = 0;       // degrees the aim is tilted up from the controller's pointing axis
     float hand_offset[3] = {};  // aim origin in the controller's frame, metres (x right, y up, z back)
-    float haptics = 1.0f;       // shot pulse strength scale (0: off)
+    float haptics = 1.0f;       // haptic pattern strength scale: pulse lengths times this, capped (0: off)
     bool marker = false;        // a small dot in the eyes where the shot will land
     bool reload_gesture = false;  // point well away from the view and pull the trigger = reload
     float reload_gesture_deg = 60;
@@ -94,6 +95,8 @@ struct VrConfig {
     float gun_light = 1.0f;      // brightness of the gun's lighting
     float gun_face_sign = 1.0f;  // which side of the mesh's triangles faces out (lighting); -1 flips
     bool gun_parts = true;       // the gun's moving parts (slide, hammer, trigger, cylinder, ...); 0: the meshes stay still
+    bool muzzle_flash = true;    // a flash at the muzzle for two frames per shot (and the gun lit by it)
+    float recoil = 1.0f;         // the drawn gun's kick per shot, a scale (0: off); drawing only, never the aim
     // Comfort (milestone 4, comfort.cpp).
     bool game_arms = false;      // the game's own first-person arms/reload animation (0: hidden in VR)
     bool camera_shake = false;   // the game's camera shake and hit smack
@@ -160,6 +163,7 @@ void gun_request_handat(float cursor_x, float cursor_y);  // sim: aim the hand a
 void gun_request_handseek();  // sim: aim the hand at the shootable thing nearest the view's centre
 void gun_log_state();      // `vr gun`: weapon, ammo, aim
 bool gun_aim_active();     // the controller drives player 1's aim now
+bool gun_weapon_empty();   // player 1's current magazine weapon has no ammo and isn't reloading (the dry click)
 void gun_log_actions(bool on);  // dev: log the game's input action values as they change
 void gun_set_god(bool on);  // dev: keep player 1's health full (tests that need time in gameplay)
 void gun_request_measure();
@@ -208,7 +212,8 @@ bool gunmodel_last_shot(uintptr_t weapon, double* t, unsigned* count);
 double gunmodel_now();
 // dev `vr gunanim ...`: freeze the current weapon's moving parts for captures (see control.cpp).
 void gunmodel_anim_command(const std::vector<std::string>& args);
-void gunmodel_backdrop(bool on);  // dev `vr gunbackdrop`: the gun drawn on plain grey in each eye
+void gunmodel_backdrop(bool on, D3DCOLOR colour);  // dev `vr gunbackdrop`: the gun drawn on a plain colour in each eye
+void gunmodel_fx_log(bool on);    // dev `vr fxlog`: log each muzzle flash frame drawn
 
 // Controller input (vrinput.cpp): buttons -> the game's DirectInput, menu pointing, haptics.
 enum CtlButton : uint32_t { kBtnTrigger = 1, kBtnA = 2, kBtnB = 4, kBtnGrip = 8, kBtnStick = 16 };
@@ -219,7 +224,10 @@ struct CtlState {
 };
 void input_frame();             // once per Present, after the poses were read
 bool input_owns_pointer();      // the controllers replace the real mouse (VR modes, a controller seen)
-void input_shot(float strength);  // a player-1 shot: haptic pulse (1 = normal, 2 = strong)
+// Haptics: play a pattern on the gun hand (src/vr/gunfeedback.h; scaled by [vr] haptics), after
+// delay_ms. Shots (gun.cpp), hit ticks, dry clicks, magazine seats and forend closes (gunmodel.cpp).
+void input_haptic(vr::Haptic pattern, float delay_ms = 0);
+void input_haptic_log(bool on);  // dev `vr fxlog`: log each pattern started and each pulse sent
 void input_sim_button(const std::string& name, bool down);  // sim controller: "trigger", "a", "off.b", ...
 void input_sim_pointer(bool on);  // sim: the scripted hand drives the menu cursor (`vr hand*` turns it on)
 void input_aim_at_screen(float x, float y);  // sim: point the hand at back-buffer pixel x, y of the flat screen

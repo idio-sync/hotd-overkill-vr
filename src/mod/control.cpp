@@ -96,8 +96,16 @@
 //                           the hand cannon's hammer cocked); more fields: shot MS, lock 0|1 (slide
 //                           lock), reloadend MS (since a reload ended: the pump's rack), out F (the
 //                           reload's magazine/cylinder way out, 0..1), trigger F, spin DEG (minigun)
+//                           flash FRAME (the muzzle flash's frame after the shot: 0, 1; 2 = gone);
+//                           the recoil follows T too
 //   vr gunanim off          dev: the moving parts live again
-//   vr gunbackdrop 0|1      dev: clear each eye to plain grey behind the gun (captures of its parts)
+//   vr muzzleflash 0|1      the muzzle flash on/off live (setting muzzle_flash)
+//   vr recoil X             the drawn gun's recoil scale live (setting recoil; 0 = off)
+//   vr haptics X            the haptic strength live (setting haptics; 0 = off)
+//   vr fxlog 0|1            dev: log each haptic pattern started, each pulse sent and each muzzle flash
+//                           frame drawn (`fx:` lines)
+//   vr gunbackdrop 0|1 [R G B]  dev: clear each eye to plain grey (or R G B, 0..255) behind the gun
+//                           (captures of its parts; a dark one shows the muzzle flash)
 //   findstr TEXT            dev: heap addresses holding TEXT (slow: ~1 min)
 //   drawstack HASH [N]      dev: call stacks and bound streams of the next N draws with vertex shader HASH
 //   vr                      log the current VR settings
@@ -479,10 +487,25 @@ FrameRequests control_tick() {
                 for (std::string t; ss >> t;) args.push_back(t);
                 gunmodel_anim_command(args);
             } else if (what == "gunbackdrop") {
-                gunmodel_backdrop(v != 0);
+                int rgb[3] = {120, 124, 132};
+                for (int& c : rgb)
+                    if (!(ss >> c)) break;
+                gunmodel_backdrop(v != 0, D3DCOLOR_XRGB(rgb[0] & 255, rgb[1] & 255, rgb[2] & 255));
             } else if (what == "gunparts") {
                 if (!a.empty()) g_vr.gun_parts = v != 0;
                 logf("vr gunparts: %d", int(g_vr.gun_parts));
+            } else if (what == "muzzleflash") {
+                if (!a.empty()) g_vr.muzzle_flash = v != 0;
+                logf("vr muzzleflash: %d", int(g_vr.muzzle_flash));
+            } else if (what == "recoil") {
+                if (!a.empty()) g_vr.recoil = v < 0 ? 0 : v > 3 ? 3 : v;
+                logf("vr recoil: %.2f", g_vr.recoil);
+            } else if (what == "haptics") {
+                if (!a.empty()) g_vr.haptics = v < 0 ? 0 : v;
+                logf("vr haptics: %.2f", g_vr.haptics);
+            } else if (what == "fxlog") {
+                input_haptic_log(v != 0);
+                gunmodel_fx_log(v != 0);
             } else if (what == "gunview") {
                 // Sim views of the gun in the hand: head and hand presets (hand relative to the head).
                 struct View { const char* name; float head_yaw, head_pitch, hx, hy, hz, hand_yaw, hand_pitch; };

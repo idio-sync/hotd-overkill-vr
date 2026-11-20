@@ -1027,11 +1027,17 @@ static std::vector<std::pair<int, unsigned>> pulses(Haptic h, float hz, float sc
 }
 
 static void test_haptic_patterns() {
-    // Pistol at 120 Hz: a strong thump (3 frames of 3999 us), a short tail, then nothing.
+    // Pistol at 120 Hz: a strong thump (3 frames of 3999 us), a short tail, then nothing; at 60 Hz
+    // still two strong frames and the tail.
     auto ps = pulses(Haptic::pistol, 120, 1);
     CHECK(ps.size() == 5);
     CHECK(ps.size() >= 3 && ps[0].first == 0 && ps[0].second == 3999 && ps[1].second == 3999 && ps[2].second == 3999);
     CHECK(ps.size() == 5 && ps[3].second < 3999 && ps[4].first == 4);
+    auto ps60 = pulses(Haptic::pistol, 60, 1);
+    CHECK(ps60.size() == 3 && ps60[1].second == 3999 && ps60[2].second < 3999);
+    // At 60 Hz each of the shotgun's thumps still gets two frames.
+    auto sg60 = pulses(Haptic::shotgun, 60, 1);
+    CHECK(sg60.size() >= 5 && sg60[0].second == 3999 && sg60[1].second == 3999);
     // Shotgun: two thumps with a gap of empty frames between them.
     auto sg = pulses(Haptic::shotgun, 120, 1);
     int gaps = 0;

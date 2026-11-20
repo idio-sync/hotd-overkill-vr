@@ -439,20 +439,36 @@ static void __fastcall hk_sety(uint8_t* player, void* edx, float y) {
 
 // --- shots ---
 
-static void shot_feedback(uintptr_t player) {
+// A player-1 shot's haptics (gun feedback stage 2): the weapon's pattern (src/vr/gunfeedback.h, by
+// its model's key; a weapon without a resolved model: by its pellets, a shotgun's or a pistol's),
+// and a light tick after it when the shot's ray hits a shootable entity (`hit`: the cast along the
+// shot ray before FireBullets; projectiles: never, they land later).
+static void shot_feedback(uintptr_t player, uintptr_t weapon, bool hit) {
     uintptr_t data = 0;
     weapon_range(player, &data);
     uint32_t pellets = 1, type = 0, sub = 0;
     if (data) safe_copy(&pellets, data + 0x1E0, 4), safe_copy(&type, data + 0x20, 4), safe_copy(&sub, data + 0x24, 4);
-    // Shotguns fire several pellets; the hand cannon is weapon kind 0xB (see gun_log_state).
-    const bool strong = pellets > 1 || sub == 0xB;
-    input_shot(strong ? 2.f : 1.f);
+    char name[64] = "", key[16] = "";
+    const bool known = weapon && gunmodel_weapon_name(weapon, name, key);
+    const vr::FeedbackDef& fb = vr::feedback_def(known ? key : pellets > 1 ? "pump" : "magnum");
+    input_haptic(fb.shot);
+    if (hit) input_haptic(vr::Haptic::hit, fb.hit_ms);
     static uintptr_t last_data;
     if (data != last_data) {
         last_data = data;
-        logf("gun: weapon data %p: type %u kind %u pellets %u range %.0f -> %s haptics", reinterpret_cast<void*>(data), type, sub, pellets,
-             weapon_range(player), strong ? "strong" : "normal");
+        logf("gun: weapon data %p: type %u kind %u pellets %u range %.0f -> %s haptics (%s)", reinterpret_cast<void*>(data), type, sub, pellets,
+             weapon_range(player), vr::haptic_name(fb.shot), known ? key : "no model: by pellets");
     }
+}
+
+// A magazine weapon (its data's clip size, +0x1C4, above 0: not the minigun, whose ammo and clip
+// read 0 while it fires) with no ammo left and not reloading.
+bool gun_weapon_empty() {
+    const uintptr_t p = player1(), w = p ? read_u32(p + 0x224) : 0, data = w ? read_u32(w + 4) : 0;
+    uint32_t ammo = 1, clip = 0;
+    uint8_t reloading = 1;
+    if (!data || !safe_copy(&ammo, w + 0x760, 4) || !safe_copy(&reloading, w + 0x764, 1) || !safe_copy(&clip, data + 0x1C4, 4)) return false;
+    return clip > 0 && clip < 1000 && ammo == 0 && !reloading;
 }
 
 // --- the gun accuracy test's shot log (dev `vr shotlog 1`; tools/gun_accuracy.py) ---
@@ -568,14 +584,17 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
     float* use_origin = origin;
     static int logged;
     vr::Ray r;
+    bool hits_shootable = false;
     if (player_shot && gun_aim_active() && hand_world_ray(&r)) {
         float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
         if (len <= 0) len = 1;
+        // What the game's ray cast will meet along the hand's ray (before spread): the haptic hit
+        // tick, and the log.
+        float hit[3];
+        HitInfo info;
+        const bool h = cast_ray(r.o, r.d, weapon_range(owner), hit, &info);
+        hits_shootable = h && info.shootable;
         if (logged < 400) {
-            // What the game's ray cast will meet along the hand's ray (before spread).
-            float hit[3];
-            HitInfo info;
-            const bool h = cast_ray(r.o, r.d, weapon_range(owner), hit, &info);
             const float dist = h ? std::sqrt((hit[0] - r.o[0]) * (hit[0] - r.o[0]) + (hit[1] - r.o[1]) * (hit[1] - r.o[1]) +
                                              (hit[2] - r.o[2]) * (hit[2] - r.o[2]))
                                  : 0;
@@ -614,7 +633,7 @@ static void __fastcall hk_fire(void* self, void* edx, float* origin, int mode, f
             logf("  -> origin overridden %.1f %.1f %.1f", own[0], own[1], own[2]);
         }
     }
-    if (player_shot) shot_feedback(owner), gunmodel_shot(reinterpret_cast<uintptr_t>(self));
+    if (player_shot) shot_feedback(owner, reinterpret_cast<uintptr_t>(self), hits_shootable), gunmodel_shot(reinterpret_cast<uintptr_t>(self));
     if (shotlog && player_shot) {
         char wf[160], bf[800];
         weapon_fields(reinterpret_cast<uintptr_t>(self), wf, sizeof wf);
@@ -677,11 +696,11 @@ static void __fastcall hk_fire_proj(void* self, void* edx, float* origin) {
         alignas(16) float own[4] = {r.o[0] - off[0], r.o[1] - off[1], r.o[2] - off[2], origin[3]};
         logf("shot (projectile): hand origin %.1f %.1f %.1f dir %.4f %.4f %.4f (offset %.1f %.1f %.1f)", r.o[0], r.o[1], r.o[2], r.d[0],
              r.d[1], r.d[2], off[0], off[1], off[2]);
-        shot_feedback(owner);
         const float before[3] = {own[0], own[1], own[2]};
         o_fire_proj(self, edx, own);
         // Launched: it wrote the launch point back (with no projectile to launch it returns early).
-        if (own[0] != before[0] || own[1] != before[1] || own[2] != before[2]) gunmodel_shot(reinterpret_cast<uintptr_t>(self));
+        if (own[0] != before[0] || own[1] != before[1] || own[2] != before[2])
+            shot_feedback(owner, reinterpret_cast<uintptr_t>(self), false), gunmodel_shot(reinterpret_cast<uintptr_t>(self));
         if (g_shotlog) log_projectile(reinterpret_cast<uintptr_t>(self), own, before, pdir, &r);
         memcpy(pdir, saved, 12);
         return;
@@ -689,7 +708,7 @@ static void __fastcall hk_fire_proj(void* self, void* edx, float* origin) {
     const float before[3] = {origin[0], origin[1], origin[2]};
     o_fire_proj(self, edx, origin);
     if (owner && owner == player1() && (origin[0] != before[0] || origin[1] != before[1] || origin[2] != before[2]))
-        gunmodel_shot(reinterpret_cast<uintptr_t>(self));
+        shot_feedback(owner, reinterpret_cast<uintptr_t>(self), false), gunmodel_shot(reinterpret_cast<uintptr_t>(self));
     if (g_shotlog && owner && owner == player1())
         log_projectile(reinterpret_cast<uintptr_t>(self), origin, before, reinterpret_cast<float*>(owner + 0x1F0), nullptr);
 }

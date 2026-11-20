@@ -161,6 +161,16 @@ struct Anim {
     unsigned hammer_shot = 0;
     float spin_speed = 0, spin_deg = 0;  // minigun
     double last_t = 0;
+    // Gun feedback stage 2: the muzzle flash, and the haptic events' previous states.
+    vr::FlashState flash;
+    bool rack_open = false;  // the pump's forend racked back (a click when it is home again)
+    bool clip_open = false;  // the magazine / cylinder out for a reload (a click when it seats)
+};
+
+// This frame's flash and recoil (gun feedback stage 2; animate works them out).
+struct Fx {
+    float recoil = 0;  // kicks in flight: 0..the weapon's cap (times its recoil_deg / recoil_cm)
+    vr::FlashFrame flash;
 };
 
 struct Model {
@@ -191,6 +201,7 @@ static bool g_level_was;
 struct ShotRec {
     double t = 0, t_prev = 0;
     unsigned n = 0;
+    double hist[8] = {};  // the last 8 shots' times, hist[(n - 1) % 8] the latest (overlapping recoil kicks)
 };
 static std::mutex g_shot_mx;
 static std::map<uintptr_t, ShotRec> g_shots;
@@ -394,8 +405,9 @@ static std::atomic<float> g_force_clip{-1};
 static bool g_barrel_line;
 
 static std::atomic<bool> g_backdrop;
+static std::atomic<D3DCOLOR> g_backdrop_colour{D3DCOLOR_XRGB(120, 124, 132)};
 void gunmodel_enable(bool on) { g_enabled = on; }
-void gunmodel_backdrop(bool on) { g_backdrop = on; }
+void gunmodel_backdrop(bool on, D3DCOLOR colour) { g_backdrop = on, g_backdrop_colour = colour; }
 void gunmodel_force_clip(float f) { g_force_clip = f; }
 void gunmodel_barrel_line(bool on) { g_barrel_line = on; }
 
@@ -453,6 +465,11 @@ static IDirect3DVertexDeclaration9* g_decl_line;
 static IDirect3DTexture9* g_white;
 static IDirect3DStateBlock9* g_sb;
 static IDirect3DVertexBuffer9* g_rest_vb;  // part 0, weight 1 for kRestVerts vertices: a mesh without its own stream
+static IDirect3DVertexShader9* g_vs_flash;
+static IDirect3DPixelShader9* g_ps_flash;
+static IDirect3DVertexDeclaration9* g_decl_flash;
+static IDirect3DTexture9* g_flash_tex[2];  // the flash's star (seen along the view) and plume (along the barrel)
+static bool g_flash_failed;
 static bool g_shader_failed;
 constexpr UINT kRestVerts = 8192;
 
@@ -487,6 +504,7 @@ sampler2D sSpec : register(s1);
 float4 cLight : register(c0);   // xyz: view-space direction to the key light
 float4 cParams : register(c1);  // ambient, diffuse, specular, specular map on
 float4 cFace : register(c2);    // x: sign that makes VFACE positive on front faces
+float4 cBoost : register(c3);   // rgb: the muzzle flash's light on the gun (1 = none)
 float4 main(float2 uv : TEXCOORD0, float3 n : TEXCOORD1, float3 v : TEXCOORD2, float face : VFACE) : COLOR {
     float3 N = normalize(n) * ((face * cFace.x) >= 0 ? 1 : -1);
     float3 L = normalize(cLight.xyz);
@@ -497,8 +515,27 @@ float4 main(float2 uv : TEXCOORD0, float3 n : TEXCOORD1, float3 v : TEXCOORD2, f
     float d = saturate(dot(N, L));
     float r = 0.5 + 0.5 * saturate(dot(N, float3(0, 1, 0)));  // a little more light from above
     float3 c = t.rgb * (cParams.x * r + cParams.y * d) + s * cParams.z * pow(saturate(dot(N, H)), 24);
-    return float4(c, 1);
+    return float4(c * cBoost.rgb, 1);
 }
+)";
+
+// The muzzle flash: world-space quads (built per eye on the CPU), the generated flash image times
+// a colour, added to the scene (depth-tested, no depth written, the target's alpha kept).
+static const char kVsFlash[] = R"(
+float4 cClip[4] : register(c0);
+struct O { float4 p : POSITION; float2 uv : TEXCOORD0; };
+O main(float4 p : POSITION, float2 uv : TEXCOORD0) {
+    O o;
+    float4 q = float4(p.xyz, 1);
+    o.p = float4(dot(q, cClip[0]), dot(q, cClip[1]), dot(q, cClip[2]), dot(q, cClip[3]));
+    o.uv = uv;
+    return o;
+}
+)";
+static const char kPsFlash[] = R"(
+sampler2D sFlash : register(s0);
+float4 cColour : register(c0);
+float4 main(float2 uv : TEXCOORD0) : COLOR { return float4(tex2D(sFlash, uv).rgb * cColour.rgb, 0); }
 )";
 
 static const char kVsLine[] = R"(
@@ -590,8 +627,12 @@ void gunmodel_reset() {
     for (IUnknown** p : {reinterpret_cast<IUnknown**>(&g_vs), reinterpret_cast<IUnknown**>(&g_ps), reinterpret_cast<IUnknown**>(&g_vs_line),
                          reinterpret_cast<IUnknown**>(&g_ps_line), reinterpret_cast<IUnknown**>(&g_decl),
                          reinterpret_cast<IUnknown**>(&g_decl_line), reinterpret_cast<IUnknown**>(&g_white),
-                         reinterpret_cast<IUnknown**>(&g_sb), reinterpret_cast<IUnknown**>(&g_rest_vb)})
+                         reinterpret_cast<IUnknown**>(&g_sb), reinterpret_cast<IUnknown**>(&g_rest_vb),
+                         reinterpret_cast<IUnknown**>(&g_vs_flash), reinterpret_cast<IUnknown**>(&g_ps_flash),
+                         reinterpret_cast<IUnknown**>(&g_decl_flash), reinterpret_cast<IUnknown**>(&g_flash_tex[0]),
+                         reinterpret_cast<IUnknown**>(&g_flash_tex[1])})
         if (*p) (*p)->Release(), *p = nullptr;
+    g_flash_failed = false;
     for (auto& [w, m] : g_models)
         for (Mesh* mesh : {&m.gun, &m.clip})
             if (mesh->part_vb) mesh->part_vb->Release(), mesh->part_vb = nullptr, mesh->part_vb_failed = false;
@@ -784,6 +825,7 @@ void gunmodel_shot(uintptr_t weapon) {
         std::lock_guard lock(g_shot_mx);
         ShotRec& s = g_shots[weapon];
         s.t_prev = s.t, s.t = t, ++s.n;
+        s.hist[(s.n - 1) % 8] = t;
         r = s;
     }
     if (r.n <= 40) {  // the first 40 shots of each weapon object (the minigun fires ~40 a second)
@@ -808,6 +850,7 @@ struct Freeze {
     bool on = false;
     std::string key;  // a kDefs key or "any"
     float shot_ms = NAN, reload_end_ms = NAN, out = NAN, trigger = NAN, spin = NAN;
+    float flash = NAN;  // the muzzle flash's frame after the shot (0, 1 shown; 2+ none); NaN: no flash
     int lock = -1;
 };
 static Freeze g_freeze;
@@ -843,16 +886,20 @@ void gunmodel_anim_command(const std::vector<std::string>& a) {
         else if (field == "out") f.out = v;
         else if (field == "trigger") f.trigger = v;
         else if (field == "spin") f.spin = v;
+        else if (field == "flash") f.flash = v;
         else ok = false;
     }
     if (!ok) {
-        logf("vr gunanim: usage: off | WEAPON|any [T] [shot MS] [lock 0|1] [reloadend MS] [out F] [trigger F] [spin DEG]");
+        logf("vr gunanim: usage: off | WEAPON|any [T] [shot MS] [lock 0|1] [reloadend MS] [out F] [trigger F] [spin DEG] [flash FRAME]");
         return;
     }
     g_freeze = f;
-    logf("vr gunanim: %s frozen: shot %.0f ms, lock %d, reload end %.0f ms ago, out %.2f, trigger %.2f, spin %.1f deg", f.key.c_str(), f.shot_ms,
-         f.lock, f.reload_end_ms, f.out, f.trigger, f.spin);
+    logf("vr gunanim: %s frozen: shot %.0f ms (recoil too), lock %d, reload end %.0f ms ago, out %.2f, trigger %.2f, spin %.1f deg, flash frame %.0f",
+         f.key.c_str(), f.shot_ms, f.lock, f.reload_end_ms, f.out, f.trigger, f.spin, f.flash);
 }
+
+static std::atomic<bool> g_fx_log;
+void gunmodel_fx_log(bool on) { g_fx_log = on; }
 
 static float smooth01(float t) {
     t = std::fmin(1.f, std::fmax(0.f, t));
@@ -860,8 +907,9 @@ static float smooth01(float t) {
 }
 
 // This frame's motion of the current weapon's parts, and how far its magazine (or the hand
-// cannon's cylinder) is out for a reload. Call with g_mx held.
-static vr::GunMotion animate(Model& m, uintptr_t w, float* clip_out) {
+// cannon's cylinder) is out for a reload; its flash and recoil (fx), and the haptic events of the
+// reload and the trigger (dry clicks, magazine seats, the forend closing). Call with g_mx held.
+static vr::GunMotion animate(Model& m, uintptr_t w, float* clip_out, Fx* fx) {
     Anim& a = m.anim;
     const double now = gunmodel_now();
     ShotRec s;
@@ -878,13 +926,14 @@ static vr::GunMotion animate(Model& m, uintptr_t w, float* clip_out) {
     if (!a.init) {
         a.init = true, a.reloading = reloading != 0, a.flag_t = now - 10, a.last_t = now;
         a.lock_checked = a.hammer_shot = s.n;
+        a.flash.shot = s.n;  // shots before the gun was first drawn don't flash
     }
     // The reloading flag's last change, and how far out the magazine was then (milestone 4).
     if ((reloading != 0) != a.reloading) {
         if (a.reloading) a.reload_end_t = now;
         a.reloading = reloading != 0, a.flag_t = now, a.out0 = a.out_last;
     }
-    a.out_last = vr::clip_out_fraction(a.reloading, progress, float(now - a.flag_t), a.out0);
+    a.out_last =vr::clip_out_fraction(a.reloading, progress, float(now - a.flag_t), a.out0);
     *clip_out = g_vr.clip_anim ? a.out_last : 0;
     if (g_force_clip >= 0) *clip_out = g_force_clip;
     const float dt = float(now - a.last_t);
@@ -898,12 +947,46 @@ static vr::GunMotion animate(Model& m, uintptr_t w, float* clip_out) {
     CtlState ctl;
     float trigger = vrsys_controller(true, &ctl) ? std::fmin(1.f, std::fmax(0.f, ctl.trigger)) : 0.f;
     unsigned shots = s.n;
+
+    // Gun feedback stage 2. Recoil: the kicks of the last few shots, overlapping for automatic fire.
+    const vr::FeedbackDef& fb = vr::feedback_def(m.def->key);
+    float since_shots[8];
+    int ns = 0;
+    for (unsigned k = 0; k < (std::min)(s.n, 8u); ++k) since_shots[ns++] = float(now - s.hist[(s.n - 1 - k) % 8]);
+    fx->recoil = vr::recoil_amount(since_shots, ns, fb.recoil_tau, fb.recoil_cap);
+    // The muzzle flash: this frame and the next after a shot.
+    fx->flash = vr::flash_step(&a.flash, s.n, fb);
+    // Haptic events (live only; the dry click is vrinput.cpp's, at the trigger pull): a click when
+    // the magazine (the hand cannon's cylinder) is back in after being well out, and when the pump's
+    // forend is home again after a rack (after each shot and at the end of a reload).
+    const bool pump = wp && wp->rack_travel != 0;
+    float rack_live = 0;
+    if (pump)
+        rack_live = (std::max)(vr::rack_curve(since, wp->rack_start, wp->rack_back, wp->rack_hold, wp->rack_fwd),
+                               vr::rack_curve(since_reload, 0, wp->rack_back, wp->rack_hold, wp->rack_fwd));
+    if (rack_live > 0.5f) a.rack_open = true;
+    if (a.out_last > 0.5f) a.clip_open = true;
+    if (a.rack_open && rack_live <= 0.001f) {
+        a.rack_open = false;
+        if (!frozen) input_haptic(vr::Haptic::forend);
+    }
+    if (a.clip_open && a.out_last <= 0.001f) {
+        a.clip_open = false;
+        if (!frozen && !pump) input_haptic(vr::Haptic::seat);
+    }
+
     if (frozen) {
-        if (!std::isnan(fz.shot_ms)) since = fz.shot_ms / 1000, since_prev = 1e9f, shots = (std::max)(shots, 1u);
+        if (!std::isnan(fz.shot_ms)) {
+            since = fz.shot_ms / 1000, since_prev = 1e9f, shots = (std::max)(shots, 1u);
+            fx->recoil = vr::recoil_kick(since, fb.recoil_tau);
+        }
         if (!std::isnan(fz.reload_end_ms)) since_reload = fz.reload_end_ms / 1000;
         if (!std::isnan(fz.trigger)) trigger = fz.trigger;
         if (!std::isnan(fz.out)) *clip_out = fz.out;
+        fx->flash = std::isnan(fz.flash) ? vr::FlashFrame{} : vr::flash_frame(int(fz.flash), 0x2545F491u, fb, 0x9E3779B9u + uint32_t(int(fz.flash)));
     }
+    if (g_fx_log && fx->flash.on)
+        logf("fx: flash of %s shot %u, frame %d (gun frame %u)%s", m.def->key, a.flash.shot, fx->flash.frame, gun_frame_no(), frozen ? " (frozen)" : "");
     vr::GunMotion mo;
     if (!wp || !g_vr.gun_parts) return mo;
     mo.trigger = trigger;
@@ -942,6 +1025,147 @@ static vr::GunMotion animate(Model& m, uintptr_t w, float* clip_out) {
     }
     if (wp->slide_is_string) mo.string = vr::string_curve(since, wp->string_snap, wp->string_draw);
     return mo;
+}
+
+// --- the muzzle flash (gun feedback stage 2) ---
+
+// A texture of our own holding generated pixels (A8R8G8B8, one level; dynamic in the DEFAULT pool,
+// as g_white: D3D9Ex has no MANAGED pool).
+static IDirect3DTexture9* make_image(IDirect3DDevice9* dev, const std::vector<uint32_t>& px, UINT w, UINT h) {
+    IDirect3DTexture9* t = nullptr;
+    if (px.size() != size_t(w) * h || FAILED(raw_create_texture(dev, w, h, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &t, nullptr)))
+        return nullptr;
+    D3DLOCKED_RECT lr;
+    if (FAILED(t->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD))) {
+        t->Release();
+        return nullptr;
+    }
+    for (UINT y = 0; y < h; ++y) memcpy(static_cast<uint8_t*>(lr.pBits) + size_t(y) * lr.Pitch, &px[size_t(y) * w], w * 4);
+    t->UnlockRect(0);
+    return t;
+}
+
+static bool ensure_flash(IDirect3DDevice9* dev) {
+    if (g_vs_flash && g_ps_flash && g_decl_flash && g_flash_tex[0] && g_flash_tex[1]) return true;
+    if (g_flash_failed) return false;
+    g_flash_failed = true;
+    ID3DXBuffer *vs = compile(kVsFlash, "vs_3_0"), *ps = compile(kPsFlash, "ps_3_0");
+    bool ok = vs && ps && SUCCEEDED(dev->CreateVertexShader(static_cast<const DWORD*>(vs->GetBufferPointer()), &g_vs_flash)) &&
+              SUCCEEDED(dev->CreatePixelShader(static_cast<const DWORD*>(ps->GetBufferPointer()), &g_ps_flash));
+    for (ID3DXBuffer* b : {vs, ps})
+        if (b) b->Release();
+    const D3DVERTEXELEMENT9 el[] = {{0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+                                    {0, 12, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0}, D3DDECL_END()};
+    if (ok) ok = SUCCEEDED(dev->CreateVertexDeclaration(el, &g_decl_flash));
+    if (ok) ok = (g_flash_tex[0] = make_image(dev, vr::flash_star_image(128), 128, 128)) != nullptr;
+    if (ok) ok = (g_flash_tex[1] = make_image(dev, vr::flash_plume_image(128, 64), 128, 64)) != nullptr;
+    logf("gun model: muzzle flash %s", ok ? "ready" : "FAILED (no flash)");
+    g_flash_failed = !ok;
+    return ok;
+}
+
+struct FlashVertex {
+    float p[3], uv[2];
+};
+
+static void quad(FlashVertex* v, const float c[3], const float a[3], const float b[3], float u0, float u1) {
+    // Corners c - a - b (uv u0,0), c + a - b (u1,0), c + a + b (u1,1), c - a + b (u0,1): two triangles.
+    const float s[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    const float uv[4][2] = {{u0, 0}, {u1, 0}, {u1, 1}, {u0, 1}};
+    const int order[6] = {0, 1, 2, 0, 2, 3};
+    for (int i = 0; i < 6; ++i) {
+        const int k = order[i];
+        for (int j = 0; j < 3; ++j) v[i].p[j] = c[j] + s[k][0] * a[j] + s[k][1] * b[j];
+        v[i].uv[0] = uv[k][0], v[i].uv[1] = uv[k][1];
+    }
+}
+
+static float norm3(float v[3]) {
+    const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (n > 0)
+        for (int i = 0; i < 3; ++i) v[i] /= n;
+    return n;
+}
+
+static void cross3(const float a[3], const float b[3], float o[3]) {
+    o[0] = a[1] * b[2] - a[2] * b[1], o[1] = a[2] * b[0] - a[0] * b[2], o[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+// The flash at the drawn gun's muzzle (`drawn`: the kicked world matrix), in each eye: a star facing
+// that eye a little ahead of the muzzle, and a plume along the barrel that faces the eye as far as
+// it can (fading out when the barrel points at the eye, where the star covers it). Sizes in model cm
+// (times gun_scale, through the world matrix).
+static void draw_flash(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, int, vr::Mat4*), const vr::Mat4& drawn, const vr::Mat4& view,
+                       const vr::GunModelDesc& desc, const vr::FeedbackDef& fb, const vr::FlashFrame& ff) {
+    if (!ensure_flash(dev)) return;
+    const vr::Vec4 mz = vr::apply(drawn, {desc.muzzle[0], desc.muzzle[1], desc.muzzle[2], 1});
+    float bm[3] = {desc.barrel[0], desc.barrel[1], desc.barrel[2]};
+    if (!(norm3(bm) > 0) || !(mz.w != 0)) return;
+    const vr::Vec4 bw = vr::apply(drawn, {bm[0], bm[1], bm[2], 0});
+    float d[3] = {bw.x, bw.y, bw.z};
+    const float units_per_cm = norm3(d);  // world units per model cm
+    if (!(units_per_cm > 0)) return;
+    const float M[3] = {mz.x / mz.w, mz.y / mz.w, mz.z / mz.w};
+    const float r = fb.flash_cm * ff.scale * units_per_cm;
+    const float C[3] = {M[0] + d[0] * 0.35f * r, M[1] + d[1] * 0.35f * r, M[2] + d[2] * 0.35f * r};
+    vr::Mat4 inv_view;
+    const bool have_inv_view = vr::invert(view, &inv_view);
+    raw_set_vs(dev, g_vs_flash);
+    raw_set_ps(dev, g_ps_flash);
+    dev->SetVertexDeclaration(g_decl_flash);
+    const struct { D3DRENDERSTATETYPE s; DWORD v; } rs[] = {
+        {D3DRS_ZENABLE, TRUE}, {D3DRS_ZWRITEENABLE, FALSE}, {D3DRS_ZFUNC, D3DCMP_LESSEQUAL}, {D3DRS_ALPHABLENDENABLE, TRUE},
+        {D3DRS_SRCBLEND, D3DBLEND_ONE}, {D3DRS_DESTBLEND, D3DBLEND_ONE}, {D3DRS_BLENDOP, D3DBLENDOP_ADD},
+        {D3DRS_SEPARATEALPHABLENDENABLE, FALSE}, {D3DRS_COLORWRITEENABLE, 0x7}, {D3DRS_CULLMODE, D3DCULL_NONE}};
+    for (auto& s : rs) raw_set_rs(dev, s.s, s.v);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    const float rot = ff.rot_deg * 3.14159265f / 180, cr = std::cos(rot), sr = std::sin(rot);
+    for (int eye = 0; eye < 2; ++eye) {
+        vr::Mat4 clip, inv;
+        if (!eye_setup(dev, eye, &clip)) continue;
+        // The eye's position: the point its projection takes to (0, 0, c, 0); else the game camera.
+        float E[3];
+        vr::Vec4 e{0, 0, 0, 0};
+        if (vr::invert(clip, &inv)) e = vr::apply(inv, {0, 0, 1, 0});
+        if (e.w != 0 && std::isfinite(e.w)) E[0] = e.x / e.w, E[1] = e.y / e.w, E[2] = e.z / e.w;
+        else if (have_inv_view) E[0] = inv_view.m[0][3], E[1] = inv_view.m[1][3], E[2] = inv_view.m[2][3];
+        else continue;
+        float to_eye[3] = {E[0] - C[0], E[1] - C[1], E[2] - C[2]};
+        if (!(norm3(to_eye) > 0)) continue;
+        // The star: in the plane facing the eye, turned by the shot's random angle.
+        float up[3] = {0, 1, 0}, u0[3], v0[3];
+        const float dot_up = up[0] * to_eye[0] + up[1] * to_eye[1] + up[2] * to_eye[2];
+        for (int i = 0; i < 3; ++i) u0[i] = up[i] - dot_up * to_eye[i];
+        if (!(norm3(u0) > 1e-3f)) u0[0] = 1, u0[1] = 0, u0[2] = 0;
+        cross3(to_eye, u0, v0);
+        float a[3], b[3];
+        for (int i = 0; i < 3; ++i) a[i] = (cr * u0[i] + sr * v0[i]) * r, b[i] = (-sr * u0[i] + cr * v0[i]) * r;
+        FlashVertex star[6];
+        quad(star, C, a, b, 0, 1);
+        set_matrix(dev, 0, clip);
+        const float colour[4] = {ff.intensity, ff.intensity, ff.intensity, 0};
+        dev->SetPixelShaderConstantF(0, colour, 1);
+        raw_set_texture(dev, 0, g_flash_tex[0]);
+        raw_dpup(dev, D3DPT_TRIANGLELIST, 2, star, sizeof(FlashVertex));
+        // The plume: from the muzzle along the barrel, as wide as it can face the eye.
+        float side[3];
+        cross3(d, to_eye, side);
+        const float facing = norm3(side);  // 0: the barrel points at the eye
+        if (facing > 0.05f && fb.plume > 0) {
+            const float len = r * fb.plume, half_w = r * 0.55f;
+            const float pc[3] = {M[0] + d[0] * len * 0.5f, M[1] + d[1] * len * 0.5f, M[2] + d[2] * len * 0.5f};
+            const float pa[3] = {d[0] * len * 0.5f, d[1] * len * 0.5f, d[2] * len * 0.5f};
+            const float pb[3] = {side[0] * half_w, side[1] * half_w, side[2] * half_w};
+            FlashVertex plume[6];
+            quad(plume, pc, pa, pb, 0, 1);
+            const float k = ff.intensity * std::fmin(1.f, (facing - 0.05f) / 0.45f);
+            const float pcol[4] = {k, k, k, 0};
+            dev->SetPixelShaderConstantF(0, pcol, 1);
+            raw_set_texture(dev, 0, g_flash_tex[1]);
+            raw_dpup(dev, D3DPT_TRIANGLELIST, 2, plume, sizeof(FlashVertex));
+        }
+    }
 }
 
 static void log_mesh_compare(const char* source, const Model& m, const vr::BoreFit& f, const vr::GunModelDesc& d) {
@@ -1031,6 +1255,7 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
     if (!placement(&p) || !vrsys_hand_in_game(&hand) || !safe_copy(vraw, va(kViewVa), sizeof vraw)) return;
     view = vr::from_d3dx(vraw);
     if (!ensure_resources(dev)) return;
+    ensure_flash(dev);  // made with the rest at the first draw, not at the first shot (a compile stalls a frame)
     vr::Mat4 world;
     if (!vr::gun_world_matrix(view, g_vr.unit_m, hand, p.gun, p.m2g, &world)) return;
     if (gun_shotlog_on()) record_drawn(world, hand, p);
@@ -1039,7 +1264,20 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
     // (model space) while reloading, or fixed.
     Model& m = *p.model;
     float out = 0;
-    const vr::GunMotion mo = animate(m, p.weapon, &out);
+    Fx fx;
+    const vr::GunMotion mo = animate(m, p.weapon, &out, &fx);
+    // Recoil (drawing only, like the parts): the drawn gun kicks up about its grip and back; the
+    // shot ray and the drawn-barrel record above keep the un-kicked `world`.
+    const vr::FeedbackDef& fb = vr::feedback_def(m.def->key);
+    vr::Mat4 drawn = world;
+    const float kick = fx.recoil * std::fmax(0.f, g_vr.recoil);
+    if (kick > 0) {
+        const vr::Vec4 g = vr::apply(p.m2g, {p.desc.grip[0], p.desc.grip[1], p.desc.grip[2], 1});
+        const float grip_gun[3] = {g.x, g.y, g.z};
+        const vr::Mat4 r = vr::recoil_in_gun(grip_gun, fb.recoil_deg * kick, fb.recoil_cm * kick * g_metres_per_unit());
+        if (!vr::gun_world_matrix(view, g_vr.unit_m, hand, vr::mul(p.gun, r), p.m2g, &drawn)) drawn = world;
+    }
+    const vr::FlashFrame flash = g_vr.muzzle_flash ? fx.flash : vr::FlashFrame{};
     vr::GunPose pose;
     vr::pose_weapon(m.wp, mo, &pose);
     vr::Mat4 clip_parts[vr::kMaxParts];
@@ -1057,7 +1295,7 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
         if (n > 0) clip_parts[0] = vr::translation(d[0] / n * dist, d[1] / n * dist, d[2] / n * dist);
         draw_clip = true;
     }
-    const vr::Mat4 wv = vr::mul(view, world);
+    const vr::Mat4 wv = vr::mul(view, drawn);
     g_sb->Capture();
     raw_set_vs(dev, g_vs);
     raw_set_ps(dev, g_ps);
@@ -1078,15 +1316,18 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
     }
     // Key light from above, a little left and from behind the viewer (view space, +z ahead).
     const float light[4] = {-0.35f, 0.8f, -0.5f, 0}, face[4] = {g_vr.gun_face_sign, 0, 0, 0};
+    // The muzzle flash lights the gun up for its two frames (warm).
+    const float b = flash.on ? flash.intensity : 0.f, boost[4] = {1 + 0.6f * b, 1 + 0.45f * b, 1 + 0.25f * b, 0};
     dev->SetPixelShaderConstantF(0, light, 1);
     dev->SetPixelShaderConstantF(2, face, 1);
+    dev->SetPixelShaderConstantF(3, boost, 1);
     set_matrix(dev, 4, wv);
     for (int eye = 0; eye < 2; ++eye) {
         vr::Mat4 clip;
         if (!eye_setup(dev, eye, &clip)) continue;
         // dev `vr gunbackdrop 1`: the gun on plain grey (captures of its moving parts).
-        if (g_backdrop) raw_clear(dev, 0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DCOLOR_XRGB(120, 124, 132), 1.0f, 0);
-        set_matrix(dev, 0, vr::mul(clip, world));
+        if (g_backdrop) raw_clear(dev, 0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, g_backdrop_colour.load(), 1.0f, 0);
+        set_matrix(dev, 0, vr::mul(clip, drawn));
         set_parts(dev, pose.gun);
         draw_mesh(dev, m.gun);
         if (draw_clip) {
@@ -1094,6 +1335,7 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
             draw_mesh(dev, m.clip);
         }
     }
+    if (flash.on && fb.flash_cm > 0) draw_flash(dev, eye_setup, drawn, view, p.desc, fb, flash);
     // Development: the barrel line from the muzzle to the aim point.
     float aim[3];
     bool hit;
@@ -1105,6 +1347,8 @@ void gunmodel_draw(IDirect3DDevice9* dev, bool (*eye_setup)(IDirect3DDevice9*, i
             raw_set_ps(dev, g_ps_line);
             dev->SetVertexDeclaration(g_decl_line);
             raw_set_rs(dev, D3DRS_ZENABLE, FALSE);
+            raw_set_rs(dev, D3DRS_ALPHABLENDENABLE, FALSE);
+            raw_set_rs(dev, D3DRS_COLORWRITEENABLE, 0xF);
             const float col[4] = {1, 0.1f, 0.1f, 1};
             dev->SetPixelShaderConstantF(0, col, 1);
             for (int eye = 0; eye < 2; ++eye) {

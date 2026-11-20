@@ -13,7 +13,9 @@
 //   screen (vrsys_panel_in_anchor(true)); where it hits becomes the game's mouse cursor (the fake
 //   GetCursorPos, in back-buffer pixels of the area the flat screen shows) and the trigger clicks.
 // - Gameplay: the aim itself goes through gun.cpp (shot paths and the cursor setters).
-// - Haptics: a pulse per player-1 shot (gun.cpp calls input_shot), longer for strong weapons.
+// - Haptics: per-weapon patterns of legacy pulses (src/vr/gunfeedback.h): each player-1 shot
+//   (gun.cpp), a tick when it hits something shootable, a dry click on an empty trigger pull, a click
+//   when a magazine seats or the pump's forend closes (gunmodel.cpp); input_haptic queues them.
 //
 // In VR modes, once a controller has been seen, the real mouse no longer moves the cursor or
 // clicks (input_owns_pointer; dinput.cpp and window.cpp ask).
@@ -21,6 +23,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <mutex>
 #include <sstream>
 
 #include "../vr/aim.h"
@@ -30,19 +33,29 @@ namespace hv {
 static std::atomic<bool> g_owns;
 static bool g_sim_pointer;  // sim: off until a `vr hand*` command (the harness's `cursor` drives menus otherwise)
 void input_sim_pointer(bool on) { g_sim_pointer = on; }
-static std::atomic<int> g_pulse_frames;
-static std::atomic<unsigned> g_pulse_us;
-
 bool input_owns_pointer() { return g_owns.load(); }
 
-void input_shot(float strength) {
-    if (g_vr.haptics <= 0) return;
-    const bool strong = strength > 1.5f;
-    // Legacy pulses are felt by their length (max 3999 us per call): strong ones repeat a few frames.
-    const unsigned us = unsigned(std::fmin(3999.f, (strong ? 3999.f : 2000.f) * std::fmin(1.f, g_vr.haptics)));
-    const int frames = int(std::lround((strong ? 3 : 1) * std::fmax(1.f, g_vr.haptics)));
-    g_pulse_us = us;
-    g_pulse_frames = frames;
+// Haptic patterns (gun feedback stage 2): legacy pulses are felt by their length (at most 3999 us
+// per call) and given at most once a frame, so each pattern is a run of pulses over a few frames
+// (src/vr/gunfeedback.h); input_frame plays them.
+static std::mutex g_hap_mx;
+static vr::HapticPlayer g_haptics;
+static std::atomic<bool> g_hap_log;
+static double g_hap_log_t0;
+void input_haptic_log(bool on) {
+    g_hap_log = on;
+    logf("vr fxlog: %d (haptic patterns and pulses, muzzle flash frames)", int(on));
+}
+
+void input_haptic(vr::Haptic pattern, float delay_ms) {
+    if (g_vr.mode == VrMode::off || g_vr.haptics <= 0) return;
+    const double now = gunmodel_now();
+    {
+        std::lock_guard lock(g_hap_mx);
+        g_haptics.play(pattern, now, delay_ms);
+        if (g_hap_log) g_hap_log_t0 = now;
+    }
+    if (g_hap_log) logf("fx: haptic %s, in %.0f ms (gun frame %u)", vr::haptic_name(pattern), delay_ms, gun_frame_no());
 }
 
 // --- game inputs ---
@@ -147,10 +160,18 @@ void input_frame() {
     if (any && !g_owns) logf("input: controllers seen; the real mouse no longer moves the cursor or clicks");
     if (any) g_owns = true;
 
-    // Haptics.
-    if (g_pulse_frames.load() > 0) {
-        --g_pulse_frames;
-        vrsys_haptic(g_pulse_us.load());
+    // Haptics: this frame's pulse of the patterns playing.
+    unsigned us;
+    double since_start;
+    {
+        std::lock_guard lock(g_hap_mx);
+        const double now = gunmodel_now();
+        us = g_haptics.tick(now, g_vr.haptics);
+        since_start = now - g_hap_log_t0;
+    }
+    if (us) {
+        vrsys_haptic(us);
+        if (g_hap_log) logf("fx: pulse %u us (%.1f ms after the last pattern was queued; gun frame %u)", us, since_start * 1000, gun_frame_no());
     }
 
     const bool gameplay = stereo_frame_active();
@@ -188,6 +209,9 @@ void input_frame() {
             game_input(g_vr.game_reload, true);
         } else {
             fire_down = true;
+            // A dry click: the weapon is empty and not reloading as the pull reaches the game (the
+            // game starts a reload from it a frame later).
+            if (gameplay && gun_weapon_empty()) input_haptic(vr::Haptic::dry);
             game_input(g_vr.game_fire, true);
         }
     } else if (!trig) {
