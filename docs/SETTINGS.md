@@ -38,6 +38,7 @@ is in the [README](../README.md#settings).
 | `clip_drop` | `0.2` | how far the magazine drops, metres |
 | `gun_light` | `1.0` | brightness of the gun's lighting |
 | `gun_face_sign` | `1` | `-1` if the gun looks lit from inside (flips which side of its triangles faces out) |
+| `gun_parts` | `1` | the gun's own parts move: the slide snaps back on each shot (and stays back when the magazine is empty, until the reload), hammers, the hand cannon's cylinder turns a chamber and swings out on reloads, the pump's forend racks, charging handles kick, the minigun's barrels spin while the trigger is held, the crossbow's string snaps forward and is drawn again, and every trigger follows the controller's trigger. Drawing only: shots still go along the un-moved barrel. `0`: the models stay still (the hand cannon's cylinder and the pump's forend are still drawn in place) |
 | `game_arms` | `0` | `1`: the game's own first-person arms and weapon during reloads (Varla and Washington both have them; in VR a second gun in front of your face). `0` hides them |
 | `camera_shake` | `0` | `1`: the game's camera shake and hit jolts (turns of up to ~30 degrees when a zombie hits you) |
 | `head_bob` | `0` | `1`: the game's head-bob while the rail moves (none was seen in the levels checked) |
@@ -51,7 +52,7 @@ is in the [README](../README.md#settings).
 | `keep_active` | `0` | `1`: the game keeps running when its window loses the focus (try it if the game pauses or stops reacting while you are in the headset) |
 | `dev` | `0` | `1`: the development harness (as with `hovr\probe.ini`): save redirected into `hovr\`, command file, minimized and muted window. Not for playing |
 | `show_<weapon>` | see below | `0` hides that weapon's model (aim and everything else still work) |
-| `clip_<weapon>` | see below | magazine: `0` hidden, `1` drops on reload, `2` always drawn, no animation |
+| `clip_<weapon>` | see below | magazine: `0` hidden, `1` drops on reload, `2` always drawn, no animation. For the hand cannon (its cylinder), pump (its forend) and minigun (its barrel cluster) only on/off: `0` hidden, anything else drawn in place as a moving part |
 | `hold_<weapon>` | `0,0` | yaw, pitch (degrees) the model is turned in the hand about its grip; the aim turns with the barrel |
 | `grip_<weapon>`, `muzzle_<weapon>`, `barrel_<weapon>` | measured | model-space grip point, muzzle point (cm) and barrel direction; defaults measured from the meshes |
 | `sim_hand` | `0.15,-0.25,-0.35` | sim only: gun hand position relative to the head, metres |
@@ -59,9 +60,9 @@ is in the [README](../README.md#settings).
 
 `<weapon>` is one of `magnum`, `gold_magnum`, `handcannon`, `pump`, `autoshotgun`, `smg`,
 `rifle`, `minigun`, `crossbow`. Defaults: all models shown; magazines drop for the magnum, auto
-shotgun, SMG and rifle, are hidden for the hand cannon, pump and crossbow (their "clip" meshes need
-the game's arm skeleton to be placed) and drawn fixed for the minigun (its barrel cluster). The gold
-magnum has no magazine.
+shotgun, SMG and rifle; the hand cannon's cylinder, the pump's forend and the minigun's barrel
+cluster (their "clip" meshes) are drawn in place as moving parts; the crossbow's (a plain box) is
+hidden. The gold magnum has no magazine.
 
 ## Default controls
 

@@ -6,7 +6,23 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The guns' own parts move**: on each shot the pistols' slides snap back (and stay back when
+  the magazine is emptied, until the reload seats the next one), the magnum's hammer is pushed back
+  with it, the hand cannon's hammer is cocked by your trigger finger and falls on the shot while its
+  cylinder turns to the next chamber (and swings out to the left during reloads), the pump's forend
+  racks back and forward after each shot and at the end of a reload, the auto shotgun's and
+  assault rifle's charging handles kick back, the minigun's barrels spin up while the trigger is
+  held and spin down after, and the crossbow's string snaps forward and is drawn again. Every
+  trigger follows the controller's analog trigger. Drawing only: shots still go along the
+  un-moved barrel. `gun_parts=0` in `hovr\hovr.ini` keeps the guns still.
+
 ### Fixed
+
+- **The hand cannon had no cylinder and the pump no forend**: both are separate meshes in the
+  game's files, which the mod took for a speed loader and a shell and left hidden; they are now
+  drawn in place.
 
 - **Shots while the hand moves go where the drawn gun pointed**: the shot, the crosshair and the
   hit marker now use the hand pose of the frame on screen instead of one about 15 ms newer, which

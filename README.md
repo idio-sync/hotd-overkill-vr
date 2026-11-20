@@ -188,7 +188,8 @@ comfort switches) is described in [docs/SETTINGS.md](docs/SETTINGS.md)
 - **Small menu text is hard to read** on the flat screen: make it bigger with `screen_width` or
   bring it closer with `screen_distance`.
 - The pause and death screens appear where the rail is facing, not where you are looking.
-- The hand cannon, pump shotgun and crossbow have no magazine animation when reloading.
+- The crossbow has no reload animation in your hand (the hand cannon's cylinder swings out and
+  the pump's forend racks instead of a magazine dropping).
 - Only player 1 is supported; no co-op.
 
 ## Uninstall

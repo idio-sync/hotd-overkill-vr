@@ -244,10 +244,22 @@ findings-static.md. Everything below was observed in the running game unless mar
   ray), and release_check's aim marker sits 5.4 cm above the pointing axis (4.4 before: the
   magnum's bore is 1.03 cm higher than its old muzzle point).
 - **Magazines**: magnum and SMG magazines sit in the grip in model space; the auto shotgun's
-  and rifle's are in front of the trigger; the hand cannon's "clip" is a speed loader floating
-  behind the gun, the pump's a shell under the receiver, the crossbow's a small wedge (all three
-  need the arm skeleton to place: hidden), the minigun's is its barrel cluster (drawn fixed).
-  Reload state: cWeapon+0x764 reloading byte, +0x76C progress 0..1 (magnum: ~1.2 s).
+  and rifle's are in front of the trigger; the crossbow's is a small plain box (hidden); the
+  minigun's is its barrel cluster. Reload state: cWeapon+0x764 reloading byte, +0x76C progress 0..1
+  (magnum: ~1.2 s).
+- **Correction (2026-11-20, gun feedback recon)**: the hand cannon's `_Clip` is not a speed loader
+  but the revolver's **cylinder** (with crane and ejector rod), and the pump's is not a shell but the
+  **forend** (a 19.5 cm sleeve): the gun meshes have neither, so both guns were drawn without them.
+  Offsets (model cm) put them in place: the cylinder by (+10.30, +2.34, -0.81), in the frame's
+  window with the top chamber on the bore (its axis in `_Clip` space: along +x through y 5.259, z
+  0.288); the forend by (+32.5, +7.0, 0) on the magazine tube. The cylinder has **7 chambers**
+  (holes centred at 90 + k 360/7 degrees about its axis), not 6. Each gun mesh is many closed
+  pieces (connected components once positions within 0.01 cm are welded), so slides, hammers,
+  triggers, knobs and handles can move as whole pieces (src/vr/gunparts.cpp has the boxes). In model
+  space +z is the shooter's left for the +x-barrel guns (checked in captures: the cylinder swung to
+  +z appears on the left from behind). Measured re-fire intervals (fake runtime, rapid trigger
+  pulls): pump ~575 ms, auto shotgun ~375 ms, crossbow ~1.02 s, rifle bursts 100 ms apart, minigun
+  ~25-50 ms; holding the trigger fires the semi-automatics once.
 - **Muzzle effects**: none at the camera. Comparing a shot frame with a later one, a shot adds
   only world-space sprites at the hit (an orange spark and blood, drawn with the scene's
   perspective: already right in stereo) - there is no first-person muzzle flash in this PC build

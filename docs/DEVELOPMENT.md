@@ -207,6 +207,24 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   the aim point), `vr clipout F` (hold the magazine F of the way out; no F = from the reload),
   `vr gunset WEAPON show|clip|grip|barrel|muzzle|clipdir|hold V...` (live tuning).
   `tools/gun_mesh.py PACK.pc --png DIR` measures the meshes in an installed hud pack.
+- Moving parts (gun feedback stage 1, docs/superpowers/specs/2026-11-20-gun-feedback-design.md;
+  `src/vr/gunparts.h` has the per-weapon boxes, pivots, travels and timings, `gunmodel.cpp` the
+  read-back, the part stream and the animation state): the log has one `gun parts: <weapon> gun|clip`
+  line per mesh resolved (pieces found per rule; a rule that doesn't match leaves that mesh still) and
+  `gun anim: shot N of <weapon>` for each weapon's first 40 shots (with the time since the one
+  before: the game's re-fire interval). `vr gunparts 0|1` switches the motion live (setting
+  `gun_parts`). `vr gunanim WEAPON T` holds that weapon's parts as they are T ms after a shot (T < 0:
+  just before it, the hand cannon's hammer cocked; `any` for the current weapon), with optional
+  fields `lock 0|1` (slide lock), `out F` (a reload's magazine / cylinder 0..1 of the way out),
+  `reloadend MS` (time since a reload ended: the pump's rack), `trigger F`, `spin DEG` (minigun);
+  `vr gunanim off` goes live again. `vr gunbackdrop 1` clears each eye to grey behind the gun, for
+  captures of its parts (the HUD panel, screen blood and some sprites still draw over it). Recipe
+  (fake runtime, gameplay, `vr god 1`): clear the zombies nearby first (their hits splash the
+  screen), then `vr gunbackdrop 1` and per phase `vr gunanim ...` + `tools\fakevr_shot.ps1 NAME -Plain
+  'head 0 1.65 0 0 0 0' 'ctl R 0 1.55 -0.30 90 0 0'` (the gun's right side; long guns 0.1-0.3 m
+  further left), from behind `ctl R 0 1.60 -0.17 0 0 0`, from above `head 0 1.65 0 0 -89 0` with `ctl
+  R -0.12 1.28 -0.02 90 0 0`, the minigun's muzzles `ctl R 0 1.72 -0.85 180 0 0`. The live analog
+  trigger: `fakevr axis R 1 0.4 0`.
 - Gun accuracy test (docs/superpowers/specs/2026-11-19-gun-accuracy-design.md; measuring only):
   `vr shotlog 1` (off by default) logs `shotlog shot` per player-1 shot (the spread-free ray the mod
   set, the barrel line at fire time, the barrel as drawn in the last frame on screen with its frame
@@ -452,8 +470,8 @@ recentre on resume) feel right.
 - Window focus: in release the game's window is left alone. If the game pauses or ignores the
   controllers while the desktop window is not in front, set `keep_active=1`.
 - With the game's reload animation hidden (`game_arms=0`) the only reload cue in your hand is the
-  magazine drop; the hand cannon, pump and crossbow have no magazine animation (their "clip"
-  meshes need the arm skeleton).
+  magazine drop (with `gun_parts`: the hand cannon's cylinder swinging out, the pump's forend
+  racking at the end); the crossbow has no reload animation (its "clip" is a plain box).
 - The death screen's red backdrop is the game's own (flat screen); no zoom or blur was seen in
   stereo frames, so there is no `hit_zoom` setting.
 - No head-bob was seen in this build (the camera kept a constant height over 15 m of rail);
