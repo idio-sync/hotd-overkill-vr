@@ -145,7 +145,9 @@ The most useful ones, in the `[vr]` section:
 | `hand_pitch` | `0` | Degrees to raise the aim if shots land consistently below where the barrel points (negative if above) |
 | `gun_grip` | `0,-0.03,0.05` | Where the gun sits in your hand, in metres: right, up, back |
 | `gun_scale` | `1.0` | Size of the gun in your hand |
-| `haptics` | `1.0` | Strength of the buzz on each shot (`0` = off) |
+| `haptics` | `1.0` | Strength of the vibration: a thump per shot (per weapon), a tick on a hit, clicks when empty and on reloads (`0` = off) |
+| `muzzle_flash` | `1` | `0` turns off the flash at the muzzle on each shot |
+| `recoil` | `1.0` | How hard the gun kicks in your hand on each shot (`0` = off; the aim never moves) |
 | `marker` | `0` | `1` shows a small red dot where your shots will land |
 | `crosshair` | `0` | `1` shows the game's crosshair on the HUD panel |
 | `camera_shake` | `0` | `1` brings back the game's camera shake when you are hit |

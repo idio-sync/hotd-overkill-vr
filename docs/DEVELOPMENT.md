@@ -225,6 +225,19 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   further left), from behind `ctl R 0 1.60 -0.17 0 0 0`, from above `head 0 1.65 0 0 -89 0` with `ctl
   R -0.12 1.28 -0.02 90 0 0`, the minigun's muzzles `ctl R 0 1.72 -0.85 180 0 0`. The live analog
   trigger: `fakevr axis R 1 0.4 0`.
+- Muzzle flash, recoil, haptic patterns (gun feedback stage 2; `src/vr/gunfeedback.h` has the
+  per-weapon flash sizes, recoil and haptic patterns, the flash's two-frame state, its generated
+  images and the pattern player; `gunmodel.cpp` draws the flash and kicks the drawn gun,
+  `vrinput.cpp` plays the patterns, `gun.cpp` queues the shot pattern and the hit tick): `vr
+  muzzleflash 0|1`, `vr recoil X`, `vr haptics X` switch the settings live. `vr gunanim WEAPON T`
+  also holds the recoil at T ms after the shot; its `flash F` field shows the flash as in frame F
+  after the shot (0 and 1; 2 = gone), e.g. `vr gunanim magnum 8 flash 1`. `vr gunbackdrop 1 R G B`
+  clears to that colour (a dark one, `25 27 32`, shows the flash). `vr fxlog 1` logs `fx:` lines:
+  each haptic pattern queued (`fx: haptic pistol, in 0 ms`), each pulse sent (`fx: pulse 3999 us
+  (16.0 ms after the last pattern was queued; gun frame N)`) and each flash frame drawn (`fx: flash
+  of smg shot 12, frame 0`); the fake runtime records the pulses it receives (`fakevr haptics`).
+  Recoil and flash use the drawn (kicked) gun; the shot ray, `shotlog`'s drawn barrel, the hit
+  marker and the cursor use the un-kicked one, so `tools\gun_accuracy.ps1` must stay at 0.000 deg.
 - Gun accuracy test (docs/superpowers/specs/2026-11-19-gun-accuracy-design.md; measuring only):
   `vr shotlog 1` (off by default) logs `shotlog shot` per player-1 shot (the spread-free ray the mod
   set, the barrel line at fire time, the barrel as drawn in the last frame on screen with its frame
@@ -415,7 +428,8 @@ the test copy).
    `hand_pitch` (degrees, + raises the aim) or `hold_<weapon> = 0,PITCH`; left/right offsets are a
    bug - report them.
 8. **Buttons and haptics**: trigger fires (hold for the SMG), A reloads, B switches weapon (the
-   model changes with the HUD), grip throws a grenade, Y/X pauses; a buzz per shot (`haptics`).
+   model changes with the HUD), grip throws a grenade, Y/X pauses; a thump per shot (a double one for shotguns, a buzz
+   for the SMG/minigun), a tick on a hit, a dry click on an empty pull, a click on reloads (`haptics`).
    Holding the right stick click for a second recentres the view.
 9. **Reload (milestone 4)**: with the magnum and the SMG, the magazine drops out of the grip and
    slides back (`clip_drop`, `clip_anim`), and **no second pair of arms/gun rises in front of

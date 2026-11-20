@@ -17,6 +17,24 @@ All notable changes to House of the Dead: Overkill VR. The format follows
   held and spin down after, and the crossbow's string snaps forward and is drawn again. Every
   trigger follows the controller's analog trigger. Drawing only: shots still go along the
   un-moved barrel. `gun_parts=0` in `hovr\hovr.ini` keeps the guns still.
+- **Muzzle flash**: each shot flashes at the muzzle in both eyes for two frames and lights the gun
+  up with it: big for the shotguns and the hand cannon, medium for the pistols and the rifle, small
+  and flickering for the SMG and the minigun (a flash for every shot), none for the crossbow.
+  `muzzle_flash=0` turns it off.
+- **Recoil**: the gun kicks up about your grip and back on each shot and springs back in about
+  0.1 s (the magnum about 4 degrees and 1.5 cm; the hand cannon and the pump the strongest; the SMG
+  and minigun small, capped while firing so the gun doesn't wander). Drawing only: shots, the hit
+  marker and the game's cursor still follow the un-kicked barrel (the gun accuracy test stays at
+  0.000 deg). `recoil` scales it (`0` = off).
+
+### Changed
+
+- **Haptics per weapon**: instead of one buzz per shot, the pistols give a strong thump, the hand
+  cannon a bigger one, the shotguns a double thump, the SMG and minigun a buzz while firing, the
+  rifle a short thump per round; a light tick follows a shot that hits a zombie, a dry click comes
+  when you pull the trigger on an empty magazine, and a click when a magazine (or the hand cannon's
+  cylinder) seats on a reload and when the pump's forend closes. `haptics` still scales all of it
+  (`0` = off).
 
 ### Fixed
 
