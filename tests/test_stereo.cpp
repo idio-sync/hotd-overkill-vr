@@ -12,6 +12,7 @@
 #include "../src/vr/aim.h"
 #include "../src/vr/comfort.h"
 #include "../src/vr/gunfit.h"
+#include "../src/vr/gunparts.h"
 #include "../src/vr/gunpose.h"
 #include "../src/vr/xform.h"
 #include "../src/vr/harness.h"
@@ -627,6 +628,269 @@ static void test_clip_out_fraction() {
     CHECK_NEAR(clip_out_fraction(false, 0, 0.2f, 0.8f), 0, 1e-6);
 }
 
+// --- gun feedback: moving parts (src/vr/gunparts.h) ---
+
+// An axis-aligned box as 8 vertices and 12 triangles, appended to a mesh (3 floats per vertex).
+static void add_box(std::vector<float>* pos, std::vector<uint32_t>* idx, float x0, float y0, float z0, float x1, float y1, float z1) {
+    const uint32_t b = uint32_t(pos->size() / 3);
+    for (int i = 0; i < 8; ++i) {
+        pos->push_back(i & 1 ? x1 : x0);
+        pos->push_back(i & 2 ? y1 : y0);
+        pos->push_back(i & 4 ? z1 : z0);
+    }
+    static const uint32_t f[36] = {0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3};
+    for (uint32_t k : f) idx->push_back(b + k);
+}
+
+static void test_mesh_pieces_weld() {
+    // Two boxes touching at a face, without shared vertices, and one apart: two pieces once
+    // welded, three without.
+    std::vector<float> pos;
+    std::vector<uint32_t> idx;
+    add_box(&pos, &idx, 0, 0, 0, 1, 1, 1);
+    add_box(&pos, &idx, 1, 0, 0, 2, 1, 1);
+    add_box(&pos, &idx, 5, 0, 0, 6, 1, 1);
+    pos.insert(pos.end(), {9, 9, 9});  // used by no triangle
+    const size_t n = pos.size() / 3;
+    std::vector<MeshPiece> pcs;
+    std::vector<int> p = mesh_pieces(pos.data(), n, 3, idx.data(), idx.size(), 0.01f, &pcs);
+    CHECK(pcs.size() == 2);
+    CHECK(p[0] == p[8] && p[0] != p[16]);
+    CHECK(p[n - 1] == -1);
+    CHECK(pcs[size_t(p[0])].tris == 24 && pcs[size_t(p[0])].verts == 16);
+    CHECK_NEAR(pcs[size_t(p[0])].hi[0], 2, 0);
+    CHECK_NEAR(pcs[size_t(p[16])].lo[0], 5, 0);
+    mesh_pieces(pos.data(), n, 3, idx.data(), idx.size(), 0, &pcs);
+    CHECK(pcs.size() == 3);
+    // Within the weld distance (0.005 apart) still one piece; 0.05 apart, two.
+    std::vector<float> near = pos;
+    for (size_t i = 8; i < 16; ++i) near[i * 3] += 0.005f;
+    mesh_pieces(near.data(), n, 3, idx.data(), idx.size(), 0.01f, &pcs);
+    CHECK(pcs.size() == 2);
+    for (size_t i = 8; i < 16; ++i) near[i * 3] += 0.045f;
+    mesh_pieces(near.data(), n, 3, idx.data(), idx.size(), 0.01f, &pcs);
+    CHECK(pcs.size() == 3);
+    // A stride with more than the position (the game's 13 floats) and an index out of range.
+    std::vector<float> wide(n * 13, 0.f);
+    for (size_t i = 0; i < n; ++i)
+        for (size_t k = 0; k < 3; ++k) wide[i * 13 + k] = pos[i * 3 + k];
+    std::vector<uint32_t> bad = idx;
+    bad.insert(bad.end(), {0, 1, 999});
+    mesh_pieces(wide.data(), n, 13, bad.data(), bad.size(), 0.01f, &pcs);
+    CHECK(pcs.size() == 2);
+}
+
+static void test_assign_parts_by_box() {
+    // A trigger box, a frame (two welded boxes) and a slide box; selected by their boxes, whatever
+    // order the pieces come in.
+    std::vector<float> pos;
+    std::vector<uint32_t> idx;
+    add_box(&pos, &idx, 8, 0, 0, 10, 1, 1);   // trigger (vertices 0-7)
+    add_box(&pos, &idx, 0, 0, 0, 5, 3, 1);    // frame (8-15)
+    add_box(&pos, &idx, 5, 0, 0, 20, 3, 1);   // frame, welded (16-23)
+    add_box(&pos, &idx, 0, 3.05f, 0, 20, 5, 1);  // slide (24-31), 0.05 above the frame
+    const size_t n = pos.size() / 3;
+    const PartRule rules[] = {
+        {"slide", kPartSlide, {-0.1f, 2.9f, -0.1f}, {20.1f, 5.1f, 1.1f}, 1, 100, 1, 1},
+        {"trigger", kPartTrigger, {7.9f, -0.1f, -0.1f}, {10.1f, 1.1f, 1.1f}, 1, 100, 1, 1},
+    };
+    PartsResult r = assign_parts(pos.data(), n, 3, idx.data(), idx.size(), rules, 2);
+    CHECK(r.ok);
+    CHECK(r.pieces == 3);
+    CHECK(r.stream.size() == n * 2);
+    CHECK_NEAR(r.stream[0], kPartTrigger, 0);
+    CHECK_NEAR(r.stream[1], 1, 0);
+    CHECK_NEAR(r.stream[2 * 8], 0, 0);  // frame
+    CHECK_NEAR(r.stream[2 * 24], kPartSlide, 0);
+    // A rule that finds the wrong number of pieces leaves everything at rest.
+    const PartRule two[] = {{"slides", kPartSlide, {-0.1f, 2.9f, -0.1f}, {20.1f, 5.1f, 1.1f}, 1, 100, 2, 2}};
+    r = assign_parts(pos.data(), n, 3, idx.data(), idx.size(), two, 1);
+    CHECK(!r.ok);
+    CHECK(r.log.find("EXPECTED 2..2") != std::string::npos);
+    for (size_t v = 0; v < n; ++v) CHECK(r.stream[2 * v] == 0 && r.stream[2 * v + 1] == 1);
+    // Triangle counts: a box has 12; a rule asking for 13+ takes nothing.
+    const PartRule big[] = {{"big", kPartSlide, {-0.1f, 2.9f, -0.1f}, {20.1f, 5.1f, 1.1f}, 13, 100, 0, 0}};
+    CHECK(assign_parts(pos.data(), n, 3, idx.data(), idx.size(), big, 1).ok);
+    // A ramp: weight 0 at x = 20, 1 at x = 0.
+    const PartRule ramp[] = {{"string", kPartSlide, {-0.1f, 2.9f, -0.1f}, {20.1f, 5.1f, 1.1f}, 1, 100, 1, 1, 0, {20, 0}}};
+    r = assign_parts(pos.data(), n, 3, idx.data(), idx.size(), ramp, 1);
+    CHECK(r.ok);
+    CHECK_NEAR(r.stream[2 * 24 + 1], 1, 1e-6);  // vertex 24: x 0
+    CHECK_NEAR(r.stream[2 * 25 + 1], 0, 1e-6);  // vertex 25: x 20
+    // A part index the shader has no matrix for fails.
+    const PartRule oob[] = {{"oob", kMaxParts, {-0.1f, 2.9f, -0.1f}, {20.1f, 5.1f, 1.1f}, 1, 100, 1, 1}};
+    CHECK(!assign_parts(pos.data(), n, 3, idx.data(), idx.size(), oob, 1).ok);
+}
+
+static void test_gun_anim_curves() {
+    CHECK_NEAR(kick_curve(-0.01f, 0.025f, 0.07f), 0, 0);
+    CHECK_NEAR(kick_curve(0, 0.025f, 0.07f), 0, 1e-6);
+    CHECK_NEAR(kick_curve(0.025f, 0.025f, 0.07f), 1, 1e-6);
+    CHECK_NEAR(kick_curve(0.095f, 0.025f, 0.07f), 0, 1e-6);
+    CHECK_NEAR(kick_curve(1e9f, 0.025f, 0.07f), 0, 0);
+    float prev = 0;
+    for (int i = 0; i <= 25; ++i) {
+        const float k = kick_curve(i * 0.001f, 0.025f, 0.07f);
+        CHECK(k >= prev);
+        prev = k;
+    }
+    for (int i = 26; i <= 100; ++i) {
+        const float k = kick_curve(i * 0.001f, 0.025f, 0.07f);
+        CHECK(k <= prev);
+        prev = k;
+    }
+    // Back fast, home slower: more than halfway back after a third of the back time.
+    CHECK(kick_curve(0.009f, 0.025f, 0.07f) > 0.5f);
+    // Cylinder: still while the hammer falls, a full chamber by ~95 ms.
+    CHECK_NEAR(cylinder_turn(0.01f), 0, 0);
+    CHECK(cylinder_turn(0.05f) > 0 && cylinder_turn(0.05f) < 1);
+    CHECK_NEAR(cylinder_turn(0.1f), 1, 0);
+    // Pump: nothing before the start, back, held, forward, done.
+    CHECK_NEAR(rack_curve(0.05f, 0.1f, 0.12f, 0.03f, 0.12f), 0, 0);
+    CHECK_NEAR(rack_curve(0.23f, 0.1f, 0.12f, 0.03f, 0.12f), 1, 0);
+    CHECK(rack_curve(0.3f, 0.1f, 0.12f, 0.03f, 0.12f) > 0);
+    CHECK_NEAR(rack_curve(0.371f, 0.1f, 0.12f, 0.03f, 0.12f), 0, 1e-6);
+    // Crossbow: forward in 20 ms, drawn back over `draw`.
+    CHECK_NEAR(string_curve(0.02f, 0.02f, 0.5f), 1, 1e-6);
+    CHECK_NEAR(string_curve(0.06f, 0.02f, 0.5f), 1, 0);
+    CHECK(string_curve(0.3f, 0.02f, 0.5f) > 0 && string_curve(0.3f, 0.02f, 0.5f) < 1);
+    CHECK_NEAR(string_curve(0.571f, 0.02f, 0.5f), 0, 1e-6);
+}
+
+static void test_minigun_spin_never_aliases() {
+    // At any frame rate the barrels advance by less than half their 60-degree spacing per frame
+    // (so they can't look still or turning backwards), and they do turn while spinning.
+    for (float hz : {30.f, 45.f, 60.f, 72.f, 80.f, 90.f, 100.f, 120.f, 144.f}) {
+        float speed = 0, angle = 0;
+        for (int i = 0; i < int(hz * 2); ++i) {
+            const float before = angle;
+            spin_step(true, 1 / hz, &speed, &angle);
+            float step = angle - before;
+            if (step < 0) step += 360;
+            CHECK(step < 30);
+            if (i > int(hz)) CHECK(step > 5);
+        }
+        CHECK_NEAR(speed, kSpinSpeed, 1e-3);
+        for (int i = 0; i < int(hz * 3); ++i) spin_step(false, 1 / hz, &speed, &angle);
+        CHECK_NEAR(speed, 0, 0);
+    }
+    // A long stall (dt clamped to 0.1 s) still steps at most kSpinMaxStep.
+    float speed = kSpinSpeed, angle = 10;
+    spin_step(true, 5, &speed, &angle);
+    CHECK_NEAR(angle, 10 + kSpinMaxStep, 1e-4);
+}
+
+static Vec4 at(const Mat4& m, float x, float y, float z) { return apply(m, {x, y, z, 1}); }
+
+static void test_pose_weapons() {
+    GunPose rest;
+    pose_weapon(nullptr, GunMotion{}, &rest);
+    for (int i = 0; i < kMaxParts; ++i) CHECK(max_abs_diff(rest.gun[i], identity()) == 0 && max_abs_diff(rest.clip[i], identity()) == 0);
+    CHECK(weapon_parts("smg") && !weapon_parts("nope") && !weapon_parts(nullptr));
+    for (int k = 0; k < weapon_parts_count(); ++k) {
+        const WeaponParts& w = weapon_parts_at(k);
+        const float bn = std::sqrt(w.barrel[0] * w.barrel[0] + w.barrel[1] * w.barrel[1] + w.barrel[2] * w.barrel[2]);
+        const float b[3] = {w.barrel[0] / bn, w.barrel[1] / bn, w.barrel[2] / bn};
+        auto along = [&](const Vec4& p, const float* from) { return (p.x - from[0]) * b[0] + (p.y - from[1]) * b[1] + (p.z - from[2]) * b[2]; };
+        GunPose p;
+        pose_weapon(&w, GunMotion{}, &p);
+        for (int i = 0; i < kMaxParts; ++i) CHECK(max_abs_diff(p.gun[i], identity()) < 1e-6f);
+        if (w.clip_part) CHECK(max_abs_diff(p.clip[kClipBase], translation(w.clip_rest[0], w.clip_rest[1], w.clip_rest[2])) < 1e-5f);
+        GunMotion m;
+        m.kick = m.hammer = m.trigger = m.string = 1;
+        pose_weapon(&w, m, &p);
+        // The trigger's blade (2 cm below its pivot) moves back; the pivot stays.
+        if (w.trigger_deg != 0) {
+            const float* q = w.trigger_pivot;
+            const Vec4 piv = at(p.gun[kPartTrigger], q[0], q[1], q[2]);
+            CHECK(std::fabs(piv.x - q[0]) + std::fabs(piv.y - q[1]) + std::fabs(piv.z - q[2]) < 1e-4f);
+            const float blade[3] = {q[0], q[1] - 2, q[2]};
+            CHECK(along(at(p.gun[kPartTrigger], blade[0], blade[1], blade[2]), blade) < -0.4f);
+        }
+        // The hammer's spur (3 cm above its pivot) moves back.
+        if (w.hammer_deg != 0) {
+            const float spur[3] = {w.hammer_pivot[0], w.hammer_pivot[1] + 3, w.hammer_pivot[2]};
+            CHECK(along(at(p.gun[kPartHammer], spur[0], spur[1], spur[2]), spur) < -1);
+        }
+        // The slide moves its full travel along its direction (back; the string forward).
+        if (w.slide_travel != 0) {
+            const Vec4 s = at(p.gun[kPartSlide], 0, 0, 0);
+            CHECK_NEAR(s.x, w.slide_dir[0] * w.slide_travel, 1e-4);
+            CHECK_NEAR(s.y, w.slide_dir[1] * w.slide_travel, 1e-4);
+            CHECK_NEAR(s.z, w.slide_dir[2] * w.slide_travel, 1e-4);
+            const float o[3] = {0, 0, 0};
+            if (w.slide_is_string) CHECK(along(s, o) > 15);
+            else CHECK(along(s, o) < -2);
+        }
+    }
+    // Hand cannon: the cylinder turns about its own axis (the axis stays put); 60 degrees takes the
+    // top chamber's centre (1.6 cm above the axis) to the next one's place; the crane doesn't turn.
+    const WeaponParts* hc = weapon_parts("handcannon");
+    CHECK(hc && hc->clip_part);
+    GunMotion m;
+    m.cyl_deg = 60;
+    GunPose p;
+    pose_weapon(hc, m, &p);
+    const float* a = hc->turn_point;
+    const Vec4 ax = at(p.clip[kClipTurn], 3, a[1], a[2]);
+    CHECK_NEAR(ax.x, 3 + hc->clip_rest[0], 1e-4);
+    CHECK_NEAR(ax.y, a[1] + hc->clip_rest[1], 1e-4);
+    CHECK_NEAR(ax.z, a[2] + hc->clip_rest[2], 1e-4);
+    const Vec4 ch = at(p.clip[kClipTurn], 0, a[1] + 1.6f, a[2]);
+    CHECK_NEAR(ch.y - hc->clip_rest[1] - a[1], 0.8, 1e-4);  // 1.6 cos 60
+    CHECK_NEAR(std::fabs(ch.z - hc->clip_rest[2] - a[2]), 1.6 * 0.8660254, 1e-4);
+    CHECK(max_abs_diff(p.clip[kClipBase], translation(hc->clip_rest[0], hc->clip_rest[1], hc->clip_rest[2])) < 1e-5f);
+    // Swung out: the cylinder's axis leaves the bore line sideways by more than its radius (2.2 cm)
+    // plus the frame's half width (1.9 cm); the crane goes with it.
+    m = GunMotion{};
+    m.swing = 1;
+    pose_weapon(hc, m, &p);
+    const Vec4 out = at(p.clip[kClipTurn], 0, a[1], a[2]);
+    CHECK(std::fabs(out.z - hc->clip_rest[2] - a[2]) > 4.0f);
+    CHECK(max_abs_diff(p.clip[kClipTurn], p.clip[kClipBase]) < 1e-5f);
+    // Pump: the forend racks 8.5 cm back along the tube.
+    const WeaponParts* pump = weapon_parts("pump");
+    m = GunMotion{};
+    m.rack = 1;
+    pose_weapon(pump, m, &p);
+    CHECK_NEAR(at(p.clip[kClipBase], 0, 0, 0).x, pump->clip_rest[0] - 8.5f, 1e-4);
+    // Minigun: the barrels turn about the bore axis (+z); the sight block (clip part 0) stays.
+    const WeaponParts* mini = weapon_parts("minigun");
+    m = GunMotion{};
+    m.spin_deg = 90;
+    pose_weapon(mini, m, &p);
+    CHECK(max_abs_diff(p.clip[kClipBase], identity()) < 1e-6f);
+    const Vec4 bar = at(p.clip[kClipTurn], mini->turn_point[0], mini->turn_point[1] + 4.1f, 30);
+    CHECK_NEAR(bar.z, 30, 1e-4);
+    CHECK_NEAR(std::fabs(bar.x - mini->turn_point[0]), 4.1, 1e-4);
+}
+
+// The crossbow string bends: with the ramp weights each half stays a straight line from where it
+// leaves the cam (weight 0) to the nock (weight 1), wherever the nock is.
+static void test_crossbow_string_bends_straight() {
+    const WeaponParts* cb = weapon_parts("crossbow");
+    CHECK(cb && cb->n_gun > 0);
+    const PartRule& r = cb->gun[0];
+    CHECK(r.ramp_axis == 0);
+    GunMotion m;
+    m.string = 1;
+    GunPose p;
+    pose_weapon(cb, m, &p);
+    const float cam[3] = {r.ramp[0], 8.83f, -23.f}, nock[3] = {r.ramp[1], 8.83f, -1.f};
+    // Released: the nock reaches the cam's x - the half lies straight across.
+    const Vec4 nk = at(p.gun[kPartSlide], nock[0], nock[1], nock[2]);
+    CHECK_NEAR(nk.x, cam[0], 0.01);
+    for (float s : {0.25f, 0.5f, 0.75f}) {
+        const float q[3] = {cam[0] + s * (nock[0] - cam[0]), cam[1], cam[2] + s * (nock[2] - cam[2])};
+        const float w = std::fmin(1.f, std::fmax(0.f, (q[0] - r.ramp[0]) / (r.ramp[1] - r.ramp[0])));
+        const Vec4 moved = at(p.gun[kPartSlide], q[0], q[1], q[2]);
+        const float x = q[0] + w * (moved.x - q[0]), z = q[2] + w * (moved.z - q[2]);
+        // On the line from the cam to the moved nock, at the same fraction.
+        CHECK_NEAR(x, cam[0] + s * (nk.x - cam[0]), 1e-3);
+        CHECK_NEAR(z, cam[2] + s * (nk.z - cam[2]), 1e-3);
+    }
+}
+
 // Release vs development: the test copy (probe.ini) keeps the whole harness and its save redirect
 // in every mode; a release install never redirects, never hides or mutes the window, never polls a
 // command file, and with mode=off (or Shift held at start) hooks nothing at all.
@@ -1141,6 +1405,12 @@ int main() {
     test_gun_in_hand_holds_grip_and_barrel();
     test_drawn_barrel_is_the_shot_ray();
     test_clip_out_fraction();
+    test_mesh_pieces_weld();
+    test_assign_parts_by_box();
+    test_gun_anim_curves();
+    test_minigun_spin_never_aliases();
+    test_pose_weapons();
+    test_crossbow_string_bends_straight();
     test_use_drawn_pose();
     test_flip_z_conversions();
     test_yaw_only_anchor();
