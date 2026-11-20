@@ -170,7 +170,7 @@ try {
             $along, $off, $right, $upcm, $deg = $Matches[1..5] | ForEach-Object { [double]$_ }
             $null = $miss[0] -match 'miss each other by (\S+) mm'
             $mm = [double]$Matches[1]
-            # The barrel sits a constant ~4.4 cm above the pointing axis (gun_grip); left/right is a bug.
+            # The barrel sits a constant ~5.4 cm above the pointing axis (gun_grip and the magnum's bore); left/right is a bug.
             Add-Result "aim $(Split-Path $a.Capture -Leaf)" ($off -le 6 -and [math]::Abs($right) -le 1 -and $mm -le 5) `
                 "marker $along m along the ray, $off cm off ($right right, $upcm up), $deg deg from the tip; eye rays meet within $mm mm"
         } else {

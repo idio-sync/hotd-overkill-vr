@@ -217,11 +217,32 @@ findings-static.md. Everything below was observed in the running game unless mar
   Shading: diffuse texture, fixed view-space key light + ambient, specular map; no normal map.
 - **Mesh poses differ per weapon** (measured from the meshes, units cm, y up): magnum, hand
   cannon, pump, auto shotgun, SMG and crossbow have the barrel along +x; the gold magnum
-  (Gwendalin) and the minigun along +z; the assault rifle is toed in (barrel ~(0.975, -0.069,
-  -0.212): about 12.5 degrees of yaw and 4 of pitch). Each weapon gets a description (barrel
+  (Gwendalin) and the minigun along +z; the assault rifle is toed in (bore (0.969, -0.111,
+  -0.221): about 12.9 degrees of yaw and 6.4 of pitch). Each weapon gets a description (barrel
   direction, muzzle point on the bore, grip point, up, magazine drop direction) and the shot ray
   is the barrel line, so the barrel points exactly where shots go (unit-tested in
   tests/test_stereo.cpp: points along the drawn barrel lie on the shot ray).
+- **Bore fit corrections (2026-11-20)**: the gun accuracy test's mesh check (`vr gunmeshcheck`,
+  src/vr/gunfit.h) found the first descriptions off the real bore: the magnum's muzzle point 1.03 cm
+  below it (23.4, 8.4, -0.87 vs the bore's 23.436, 9.433, -0.870), the gold magnum's 1.19 cm
+  below (0, 5.3, 16.3 vs -0.007, 6.485, 16.328), the pump's 1.19 cm above (61.7, 12.0, -0.47 vs
+  61.669, 10.807, -0.481), the auto shotgun's 0.40 cm below (73.3, 12.0, -0.75 vs 73.283, 12.400,
+  -0.749), the hand cannon's 0.46 cm above (33.5, 9.6, -0.5 vs 33.495, 9.140, -0.519), and the
+  rifle's barrel direction 2.47 degrees off its bore ((0.975, -0.069, -0.212) vs (0.968961,
+  -0.110631, -0.221077), muzzle 52.9, 2.7, -11.05 vs 52.671, 2.870, -11.168): its shots went ~2.4
+  degrees above the visible bore. The descriptions now use the fit's values. Each bore was also
+  checked by circle fits at both ends of the barrel (magnum x 5.8 and 23.4, gold magnum z -4.2 and
+  16.3, pump x 26 and 61.7, auto shotgun x 55.3 and 73.3, hand cannon x 12.7 and 33.4): the same
+  centre to 0.005 cm, so the axes are exactly along +x/+z (the fit's own axis for the hand
+  cannon is not found: its only ring within 15 cm of the muzzle is the muzzle face). Grip points
+  are unchanged, so these guns sit in the hand as before; the rifle turns 2.47 degrees about its grip
+  (its nose 2.4 up, 0.6 sideways, roll 0.04), which lines its bore up with the controller's pointing axis. Its magazine still
+  drops along model -y (its long axis is (0.05, -0.99, -0.12)). SMG unchanged (fit within
+  0.007 cm); crossbow and minigun have no bore to fit. In the game (fake runtime, Naked Terror):
+  `vr gunmeshcheck` now gives 0.000 cm across the axis for all six (angle 0.000-0.034 deg), the
+  still shots stay at 0.000 deg against the drawn barrel (rifle and shotguns: the spread-free
+  ray), and release_check's aim marker sits 5.4 cm above the pointing axis (4.4 before: the
+  magnum's bore is 1.03 cm higher than its old muzzle point).
 - **Magazines**: magnum and SMG magazines sit in the grip in model space; the auto shotgun's
   and rifle's are in front of the trigger; the hand cannon's "clip" is a speed loader floating
   behind the gun, the pump's a shell under the receiver, the crossbow's a small wedge (all three

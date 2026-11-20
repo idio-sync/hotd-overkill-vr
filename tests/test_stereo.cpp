@@ -501,7 +501,7 @@ static float dist_to_line(const float p[3], const Ray& r) {
 }
 
 // The magnum's description (barrel along +x) and one toed-in like the assault rifle's mesh.
-static const GunModelDesc kMagnum = {{1, 0, 0}, {0, 1, 0}, {23.4f, 8.4f, -0.87f}, {0, 1, -0.87f}, {-0.25f, -0.97f, 0}};
+static const GunModelDesc kMagnum = {{1, 0, 0}, {0, 1, 0}, {23.436f, 9.433f, -0.87f}, {0, 1, -0.87f}, {-0.25f, -0.97f, 0}};
 static const GunModelDesc kToedIn = {{0.95f, -0.07f, -0.22f}, {0, 1, 0}, {52.9f, 2.7f, -11.05f}, {-3, -1, 0.8f}, {0, -1, 0}};
 
 static void test_model_to_gun() {

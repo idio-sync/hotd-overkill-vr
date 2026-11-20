@@ -12,6 +12,11 @@ All notable changes to House of the Dead: Overkill VR. The format follows
   hit marker now use the hand pose of the frame on screen instead of one about 15 ms newer, which
   put shots ahead of the barrel while sweeping onto a target (magnum, fake runtime: about 1 deg at
   60 deg/s and 2.5 deg at 180 deg/s before, 0.00 deg now; still aim unchanged at 0.000 deg).
+- **Shots leave from the bore of the gun model**: the assault rifle shot about 2.4 deg above its
+  visible barrel, and the magnum, gold magnum and pump shot from a point about 1 cm off their bore
+  (hand cannon and auto shotgun 0.4-0.5 cm). Their descriptions now follow the bore fitted from the
+  game's own meshes; the rifle model sits about 2.5 deg differently in the hand, so its barrel
+  lines up with the controller.
 
 ## [0.1.4] - 2026-11-19
 

@@ -27,7 +27,7 @@
 //
 // Placement (src/vr/gunpose.h): each mesh is posed differently, so each weapon has a description
 // (barrel direction, muzzle point, grip point, up, magazine drop direction; defaults measured from
-// the meshes with tools/gun_mesh.py). The grip point sits at gun_grip in the controller's frame;
+// the meshes with tools/gun_mesh.py, the bores checked with the bore fit). The grip point sits at gun_grip in the controller's frame;
 // the barrel is parallel to the controller's pointing axis (unless hold_<weapon> tilts it), and
 // the shot ray is the barrel line itself (gun.cpp), so the barrel points exactly where shots go.
 #include "common.h"
@@ -68,15 +68,18 @@ struct WeaponDef {
 };
 
 // Model units are centimetres. Measured with tools/gun_mesh.py (bounding boxes, slices along the
-// barrel, side/top views): see docs/findings-probe.md "The weapon model".
+// barrel, side/top views): see docs/findings-probe.md "The weapon model". The muzzle points (and
+// the rifle's barrel direction) of the magnum, gold magnum, hand cannon, pump, auto shotgun and
+// rifle are the bore fit's (src/vr/gunfit.h, `vr gunmeshcheck`): the centre of the bore's ring at
+// the muzzle face, so the shot line runs down the bore. Grip points are unchanged by that fit.
 static const WeaponDef kDefs[] = {
-    {"GunArms_Magnum", "magnum", {{1, 0, 0}, {0, 1, 0}, {23.4f, 8.4f, -0.87f}, {0.0f, 1.0f, -0.87f}, {-0.25f, -0.97f, 0}}, kClipDrop, true},
-    {"GunArms_Gwendalin", "gold_magnum", {{0, 0, 1}, {0, 1, 0}, {0, 5.3f, 16.3f}, {0, -3.0f, -11.5f}, {0, -1, 0}}, kClipNone, true},
-    {"GunArms_HandCannon", "handcannon", {{1, 0, 0}, {0, 1, 0}, {33.5f, 9.6f, -0.5f}, {-2.0f, 0.5f, -0.5f}, {0, -1, 0}}, kClipNone, true},
-    {"GunArms_ShotgunPump", "pump", {{1, 0, 0}, {0, 1, 0}, {61.7f, 12.0f, -0.47f}, {-8.0f, 4.0f, -0.5f}, {0, -1, 0}}, kClipNone, true},
-    {"GunArms_ShotGunAuto", "autoshotgun", {{1, 0, 0}, {0, 1, 0}, {73.3f, 12.0f, -0.75f}, {1.0f, 2.0f, -0.7f}, {0, -1, 0}}, kClipDrop, true},
+    {"GunArms_Magnum", "magnum", {{1, 0, 0}, {0, 1, 0}, {23.436f, 9.433f, -0.87f}, {0.0f, 1.0f, -0.87f}, {-0.25f, -0.97f, 0}}, kClipDrop, true},
+    {"GunArms_Gwendalin", "gold_magnum", {{0, 0, 1}, {0, 1, 0}, {-0.007f, 6.485f, 16.328f}, {0, -3.0f, -11.5f}, {0, -1, 0}}, kClipNone, true},
+    {"GunArms_HandCannon", "handcannon", {{1, 0, 0}, {0, 1, 0}, {33.495f, 9.14f, -0.519f}, {-2.0f, 0.5f, -0.5f}, {0, -1, 0}}, kClipNone, true},
+    {"GunArms_ShotgunPump", "pump", {{1, 0, 0}, {0, 1, 0}, {61.669f, 10.807f, -0.481f}, {-8.0f, 4.0f, -0.5f}, {0, -1, 0}}, kClipNone, true},
+    {"GunArms_ShotGunAuto", "autoshotgun", {{1, 0, 0}, {0, 1, 0}, {73.283f, 12.4f, -0.749f}, {1.0f, 2.0f, -0.7f}, {0, -1, 0}}, kClipDrop, true},
     {"GunArms_SMG", "smg", {{1, 0, 0}, {0, 1, 0}, {28.3f, 11.5f, -0.72f}, {2.0f, 1.5f, -0.9f}, {0, -1, 0}}, kClipDrop, true},
-    {"GunArms_AssaultRifle", "rifle", {{0.975f, -0.069f, -0.212f}, {0, 1, 0}, {52.9f, 2.7f, -11.05f}, {-3.0f, -1.0f, 0.8f}, {0, -1, 0}}, kClipDrop, true},
+    {"GunArms_AssaultRifle", "rifle", {{0.968961f, -0.110631f, -0.221077f}, {0, 1, 0}, {52.671f, 2.87f, -11.168f}, {-3.0f, -1.0f, 0.8f}, {0, -1, 0}}, kClipDrop, true},
     {"GunArms_Minigun", "minigun", {{0, 0, 1}, {0, 1, 0}, {0, 0, 51.9f}, {0, 7.0f, 4.0f}, {0, -1, 0}}, kClipFixed, true},
     {"GunArms_CrossBow", "crossbow", {{1, 0, 0}, {0, 1, 0}, {46.7f, 7.2f, -0.9f}, {1.0f, 1.0f, -0.9f}, {0, -1, 0}}, kClipNone, true},
 };
