@@ -35,6 +35,14 @@ void logf(const char* fmt, ...);
 uintptr_t exe_base();
 inline uintptr_t va(uintptr_t image_va) { return exe_base() + image_va - 0x400000; }  // the exe is ASLR'd
 bool readable(uintptr_t addr);  // VirtualQuery: slow (page-table walk); not for per-draw use
+// The highest user-mode address (GetSystemInfo, read once): 0x7FFEFFFF, or 0xFFFEFFFF for a
+// large-address-aware exe (the "4 GB patch") on 64-bit Windows. Pointers read from game memory
+// are checked against this, never against a fixed 2 GB limit.
+uintptr_t max_user_address();
+// Development only (probe.ini high_addresses=MB at load, keep_mb -1; the command `reservelow MB`
+// later): reserve the free space below 2 GB but keep_mb of it, so the game's allocations land
+// above 2 GB (a large-address-aware exe). Does nothing in a release install.
+void reserve_low_address_space(int keep_mb = -1);
 bool safe_copy(void* dst, uintptr_t src, size_t n);  // exception-guarded read
 // Inline detour at image VA `image_va`: checks that the first `n` bytes are `expect` (they must be
 // position-independent, n >= 5), copies them to a trampoline and jumps to `hook`. Returns the
@@ -184,6 +192,7 @@ bool gunmodel_barrel(const vr::Mat4& hand_lh, vr::Ray* cam_ray);  // the barrel 
 void gunmodel_reset();       // device reset: drop our D3D objects
 void gunmodel_frame();       // once per Present: drop the models when the level ends
 void gunmodel_log();         // `vr gunmodel`
+void gunmodel_scan_log(uint32_t limit);  // `vr gunscan [LIMIT]`: the weapon data scan, slot by slot (LIMIT: pointer limit, 0 = the process's)
 void gunmodel_enable(bool on);
 void gunmodel_force_clip(float out);  // dev: magazine out fraction (-1: from the reload state)
 void gunmodel_barrel_line(bool on);   // dev: draw the barrel line to the aim point

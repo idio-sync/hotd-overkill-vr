@@ -53,6 +53,7 @@
 #include "../vr/gunfit.h"
 #include "../vr/gunparts.h"
 #include "../vr/gunpose.h"
+#include "../vr/gunscan.h"
 
 struct ID3DXBuffer : IUnknown {
     virtual LPVOID STDMETHODCALLTYPE GetBufferPointer() = 0;
@@ -64,6 +65,7 @@ namespace hv {
 constexpr uintptr_t kGameControl = 0x99B708;  // +0x24 player 1
 constexpr uintptr_t kViewVa = 0x9C7E48;
 constexpr uintptr_t kInstanceVtbl = 0x80FB58;  // actor instance (engine class, no RTTI)
+constexpr double kRetrySeconds = 120;  // a weapon without a model is looked at again for this long
 
 // --- weapons ---
 
@@ -183,6 +185,12 @@ struct Model {
     bool gun_parts_ok = false;  // the gun mesh's parts were found
     bool clip_ok = true;        // a clip_part weapon's _Clip is the expected mesh (else hidden, as before)
     Anim anim;
+    // No gun mesh found: resolved again every second (quietly) for kRetrySeconds, in case the
+    // weapon's entities were not made yet when it was first seen (it is first seen while the level
+    // loads).
+    bool retry = false;
+    int tries = 1;
+    double first_t = 0, next_t = 0;
 };
 
 static void release(Mesh& m) {
@@ -222,9 +230,14 @@ static uintptr_t rd(uintptr_t a) {
     return safe_copy(&v, a, 4) ? v : 0;
 }
 
-static bool heap_ptr(uintptr_t p) { return p >= 0x10000 && p < 0x7FFF0000 && !(p & 3); }
+// Pointers read from game memory: within the process's user address range (above 2 GB too when
+// the exe is large-address-aware: src/vr/gunscan.h).
+// (`vr gunscan LIMIT` overrides it for one scan, e.g. 7FFEFFFF: what v0.2.0's 2 GB check made of it.)
+static uint32_t g_limit_override;
+static uint32_t ptr_limit() { return g_limit_override ? g_limit_override : uint32_t(max_user_address()); }
+static bool heap_ptr(uintptr_t p) { return vr::ptr_ok(uint32_t(p), ptr_limit(), true); }
 // Pack data is not always aligned (the SMG's primitive groups sit at an odd offset).
-static bool pack_ptr(uintptr_t p) { return p >= 0x10000 && p < 0x7FFF0000; }
+static bool pack_ptr(uintptr_t p) { return vr::ptr_ok(uint32_t(p), ptr_limit(), false); }
 
 // D3D objects behind pointers read from game memory: checked through their own methods under an
 // exception guard before we take a reference.
@@ -257,20 +270,32 @@ static const char* fmt4(D3DFORMAT f, char* buf) {
 }
 
 // ACTR -> its single mesh's buffers and textures.
-static bool resolve_mesh(uintptr_t actr, Mesh* out) {
+// quiet: a retry (current_model); its failures were logged the first time. *why: the reason it
+// failed, for the scan's log lines.
+static bool resolve_mesh(uintptr_t actr, Mesh* out, bool quiet, std::string* why) {
+    char buf[96];
+    auto fail = [&](const char* fmt, uintptr_t v) {
+        const vr::PtrVerdict pv = vr::check_ptr(uint32_t(v), ptr_limit(), false);
+        snprintf(buf, sizeof buf, fmt, unsigned(v), pv == vr::PtrVerdict::ok ? "unreadable" : vr::ptr_verdict_name(pv));
+        *why = buf;
+        return false;
+    };
     uint32_t hdr[4] = {};
-    if (!safe_copy(hdr, actr, 16) || hdr[1] != 0x10010000) return false;
+    if (!safe_copy(hdr, actr, 16) || hdr[1] != 0x10010000) return fail("ACTR %08X not an actor resource (%s)", actr);
     const uintptr_t name_p = rd(actr + 0x6C), node = rd(actr + 0x28);
-    if (!safe_copy(out->name, name_p, sizeof out->name - 1)) return false;
+    if (!safe_copy(out->name, name_p, sizeof out->name - 1)) return fail("name %08X %s", name_p);
     out->name[sizeof out->name - 1] = 0;
-    const uintptr_t mesh = pack_ptr(node) ? rd(node + 0xB0) : 0;
-    if (!pack_ptr(mesh)) return false;
+    if (!pack_ptr(node)) return fail("node %08X %s", node);
+    const uintptr_t mesh = rd(node + 0xB0);
+    if (!pack_ptr(mesh)) return fail("mesh %08X %s", mesh);
     const uint32_t nv = uint32_t(rd(mesh)), nidx = uint32_t(rd(mesh + 0x44));
     const uintptr_t vbr = rd(mesh + 4), ibr = rd(mesh + 0x48), groups = rd(mesh + 0x0C);
     uint32_t vrec[4] = {}, irec[5] = {};
-    if (!heap_ptr(vbr) || !heap_ptr(ibr) || !safe_copy(vrec, vbr, 16) || !safe_copy(irec, ibr, 20)) return false;
+    if (!heap_ptr(vbr) || !safe_copy(vrec, vbr, 16)) return fail("vertex buffer record %08X %s", vbr);
+    if (!heap_ptr(ibr) || !safe_copy(irec, ibr, 20)) return fail("index buffer record %08X %s", ibr);
+    *why = "buffer records or D3D buffers unexpected";
     if (vrec[2] != nv || irec[2] != nidx || nv == 0 || nidx < 3 || vrec[3] < 32 || vrec[3] > 128) {
-        logf("gun model: %s: unexpected buffer records (verts %u/%u stride %u, indices %u/%u)", out->name, nv, vrec[2], vrec[3], nidx, irec[2]);
+        if (!quiet) logf("gun model: %s: unexpected buffer records (verts %u/%u stride %u, indices %u/%u)", out->name, nv, vrec[2], vrec[3], nidx, irec[2]);
         return false;
     }
     auto vb = reinterpret_cast<IDirect3DVertexBuffer9*>(uintptr_t(vrec[0]));
@@ -279,7 +304,7 @@ static bool resolve_mesh(uintptr_t actr, Mesh* out) {
     D3DINDEXBUFFER_DESC id{};
     if (!seh_vb(vb, &vd) || !seh_ib(ib, &id) || vd.Size < nv * vrec[3] ||
         id.Size < nidx * (id.Format == D3DFMT_INDEX32 ? 4u : 2u)) {
-        logf("gun model: %s: the buffers are not the expected D3D objects", out->name);
+        if (!quiet) logf("gun model: %s: the buffers are not the expected D3D objects", out->name);
         return false;
     }
     out->vb_rec = vbr;
@@ -319,39 +344,77 @@ static uintptr_t instance_of(uintptr_t entity) {
 
 static void build_parts(Model& m);
 
-static Model resolve(uintptr_t weapon) {
+// The weapon's model from the entities its data block lists. The first attempt logs, when no model
+// is found, what each slot of the scan held and why it was passed over (src/vr/gunscan.h); a retry
+// (current_model) logs nothing unless it succeeds; `vr gunscan` logs the slots whatever the outcome.
+enum class Scan { first, retry, dump };
+static Model resolve(uintptr_t weapon, Scan mode) {
+    const bool quiet = mode != Scan::first;
     Model m;
     const uintptr_t data = rd(weapon + 4);
     m.data = data;
-    if (!heap_ptr(data)) return m;
+    const vr::PtrVerdict dv = vr::check_ptr(uint32_t(data), ptr_limit(), true);
+    if (dv != vr::PtrVerdict::ok) {
+        m.retry = true;
+        if (mode != Scan::retry)
+            logf("gun model: weapon %p: its data pointer %p is %s (pointer limit %08X); no model drawn", reinterpret_cast<void*>(weapon),
+                 reinterpret_cast<void*>(data), vr::ptr_verdict_name(dv), ptr_limit());
+        return m;
+    }
+    std::vector<vr::ScanSlot> slots;
     for (uintptr_t off = 0x28; off <= 0xC0; off += 4) {
+        vr::ScanSlot s;
         const uintptr_t e = rd(data + off);
-        if (!heap_ptr(e) || e == weapon) continue;
-        const uintptr_t inst = instance_of(e);
-        if (!inst) continue;
-        const uintptr_t actr = rd(inst + 0x8C);
-        char name[64] = {};
-        if (!safe_copy(name, rd(actr + 0x6C), sizeof name - 1) || _strnicmp(name, "GunArms_", 8)) continue;
-        const size_t n = strlen(name);
-        const bool clip = n > 5 && !_stricmp(name + n - 5, "_Clip");
-        Mesh& dst = clip ? m.clip : m.gun;
-        if (dst.vb) continue;
-        if (!resolve_mesh(actr, &dst)) continue;
-        if (clip) m.has_clip = true;
-        else m.def = def_by_actr(name);
+        s.off = uint32_t(off), s.value = uint32_t(e);
+        s.ptr = vr::check_ptr(s.value, ptr_limit(), true);
+        if (s.ptr == vr::PtrVerdict::null) s.verdict = vr::SlotVerdict::null;
+        else if (s.ptr != vr::PtrVerdict::ok) s.verdict = vr::SlotVerdict::rejected;
+        else if (e == weapon) s.verdict = vr::SlotVerdict::self;
+        else if (const uintptr_t inst = instance_of(e); !inst) s.verdict = vr::SlotVerdict::no_instance;
+        else {
+            const uintptr_t actr = rd(inst + 0x8C);
+            char name[64] = {};
+            if (!safe_copy(name, rd(actr + 0x6C), sizeof name - 1)) {
+                s.verdict = vr::SlotVerdict::no_name;
+            } else {
+                s.name = name;
+                const vr::ActorKind kind = vr::gunarms_kind(name);
+                Mesh& dst = kind == vr::ActorKind::clip ? m.clip : m.gun;
+                std::string why;
+                if (kind == vr::ActorKind::other) s.verdict = vr::SlotVerdict::other_actor;
+                else if (dst.vb) s.verdict = vr::SlotVerdict::duplicate;
+                else if (!resolve_mesh(actr, &dst, quiet, &why)) s.verdict = vr::SlotVerdict::mesh_failed, s.name += ": " + why;
+                else if (kind == vr::ActorKind::clip) s.verdict = vr::SlotVerdict::clip, m.has_clip = true;
+                else s.verdict = vr::SlotVerdict::gun, m.def = def_by_actr(name);
+            }
+        }
+        slots.push_back(s);
     }
     m.ok = m.gun.vb != nullptr;
-    if (m.ok && !m.def) logf("gun model: %s is not a known weapon model; not drawn", m.gun.name);
-    if (!m.ok) logf("gun model: weapon %p (data %p) has no resident GunArms model; no model drawn", reinterpret_cast<void*>(weapon),
-                    reinterpret_cast<void*>(data));
+    m.retry = !m.ok;  // nothing found yet: tried again every second for a while (current_model)
+    if (m.ok && !m.def && !quiet) logf("gun model: %s is not a known weapon model; not drawn", m.gun.name);
+    if (!m.ok && mode == Scan::first)
+        logf("gun model: weapon %p (data %p) has no resident GunArms model; no model drawn (looked for again every second for "
+             "%.0f s). What the weapon data held:",
+             reinterpret_cast<void*>(weapon), reinterpret_cast<void*>(data), kRetrySeconds);
+    else if (mode == Scan::dump)
+        logf("vr gunscan: weapon %p (data %p): %s", reinterpret_cast<void*>(weapon), reinterpret_cast<void*>(data),
+             m.ok ? m.gun.name : "no GunArms model found");
+    if ((!m.ok && mode == Scan::first) || mode == Scan::dump) {
+        for (const std::string& line : vr::describe_scan(slots, ptr_limit(), 8, 6)) logf("gun model:   %s", line.c_str());
+        const std::string hint = vr::scan_hint(slots);
+        if (!hint.empty()) logf("gun model:   so: %s", hint.c_str());
+    }
     m.ok = m.ok && m.def;
-    if (m.ok) build_parts(m);
+    if (m.ok && mode != Scan::dump) build_parts(m);
     return m;
 }
 
 static void release_all() {
-    for (auto& [w, m] : g_models) release(m.gun), release(m.clip);
-    if (!g_models.empty()) logf("gun model: level ended, %zu weapon model(s) released", g_models.size());
+    size_t drawn = 0;
+    for (auto& [w, m] : g_models) release(m.gun), release(m.clip), drawn += m.ok;
+    if (!g_models.empty())
+        logf("gun model: level ended, %zu weapon model(s) released (%zu weapon(s) had none)", drawn, g_models.size() - drawn);
     g_models.clear();
     std::lock_guard lock(g_shot_mx);
     g_shots.clear();
@@ -371,7 +434,15 @@ static Model* current_model(uintptr_t* weapon_out = nullptr) {
     if (!st.level) return nullptr;
     const uintptr_t w = current_weapon();
     if (weapon_out) *weapon_out = w;
-    if (!heap_ptr(w)) return nullptr;
+    if (!w) return nullptr;
+    if (const vr::PtrVerdict wv = vr::check_ptr(uint32_t(w), ptr_limit(), true); wv != vr::PtrVerdict::ok) {
+        static uintptr_t logged;
+        if (logged != w)
+            logf("gun model: player 1's weapon pointer %p is %s (pointer limit %08X); no model drawn", reinterpret_cast<void*>(w),
+                 vr::ptr_verdict_name(wv), ptr_limit());
+        logged = w;
+        return nullptr;
+    }
     auto it = g_models.find(w);
     // A cached model whose weapon or buffers changed (a new weapon object at an old address, or
     // the pack reloaded) is resolved again.
@@ -380,11 +451,31 @@ static Model* current_model(uintptr_t* weapon_out = nullptr) {
         g_models.erase(it);
         it = g_models.end();
     }
+    const double now = gunmodel_now();
     if (it == g_models.end()) {
-        it = g_models.emplace(w, resolve(w)).first;
+        it = g_models.emplace(w, resolve(w, Scan::first)).first;
+        it->second.first_t = now, it->second.next_t = now + 1.0;
         if (it->second.ok)
             logf("gun model: weapon %p -> %s (%s)%s", reinterpret_cast<void*>(w), it->second.gun.name, it->second.def->key,
                  it->second.has_clip ? " with its magazine" : "");
+    } else if (it->second.retry && now >= it->second.next_t && now - it->second.first_t < kRetrySeconds) {
+        // Nothing found the first time: look again (quietly; it logs only when it finds the model).
+        Model m = resolve(w, Scan::retry);
+        const int tries = it->second.tries + 1;
+        const double first = it->second.first_t;
+        if (m.gun.vb) {
+            release(it->second.gun), release(it->second.clip);
+            it->second = std::move(m);
+            if (it->second.ok)
+                logf("gun model: weapon %p -> %s (%s)%s, found on try %d, %.1f s after the first", reinterpret_cast<void*>(w), it->second.gun.name,
+                     it->second.def->key, it->second.has_clip ? " with its magazine" : "", tries, now - first);
+            else
+                logf("gun model: weapon %p: %s found on try %d, but it is not a known weapon model; not drawn", reinterpret_cast<void*>(w),
+                     it->second.gun.name, tries);
+        } else {
+            release(m.gun), release(m.clip);
+        }
+        it->second.tries = tries, it->second.first_t = first, it->second.next_t = now + 1.0;
     }
     return it->second.ok ? &it->second : nullptr;
 }
@@ -1384,6 +1475,21 @@ void gunmodel_log() {
         logf("  barrel (camera space, m): muzzle %.3f %.3f %.3f dir %.4f %.4f %.4f; hand at %.3f %.3f %.3f dir %.4f %.4f %.4f", r.o[0], r.o[1],
              r.o[2], r.d[0], r.d[1], r.d[2], hand.m[0][3], hand.m[1][3], hand.m[2][3], hand.m[0][2], hand.m[1][2], hand.m[2][2]);
     }
+}
+
+// `vr gunscan [LIMIT]`: the current weapon's scan logged slot by slot, as a failed resolve logs it,
+// with the pointer limit LIMIT (hex) instead of the process's own if given. Nothing is kept.
+void gunmodel_scan_log(uint32_t limit) {
+    std::lock_guard lock(g_mx);
+    const uintptr_t w = current_weapon();
+    if (!game_state().level || !w) {
+        logf("vr gunscan: no weapon (not in a level)");
+        return;
+    }
+    g_limit_override = limit;
+    Model m = resolve(w, Scan::dump);
+    g_limit_override = 0;
+    release(m.gun), release(m.clip);
 }
 
 // `vr gunset KEY FIELD V...`: live per-weapon tuning (show, clip, grip, barrel, muzzle, hold).

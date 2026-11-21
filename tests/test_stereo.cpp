@@ -16,6 +16,7 @@
 #include "../src/vr/gunfit.h"
 #include "../src/vr/gunparts.h"
 #include "../src/vr/gunpose.h"
+#include "../src/vr/gunscan.h"
 #include "../src/vr/xform.h"
 #include "../src/vr/harness.h"
 #include "../src/vr/settings_file.h"
@@ -1583,7 +1584,108 @@ static void test_bore_fit() {
     }
 }
 
+// The weapon model's pointer checks (src/vr/gunscan.h): the process's real user range, so a
+// large-address-aware exe's objects above 2 GB pass (a player's report: no gun model, v0.2.0).
+static void test_pointer_range() {
+    const uint32_t laa = 0xFFFEFFFF;
+    CHECK(check_ptr(0, kMaxUserAddress2G, true) == PtrVerdict::null);
+    CHECK(check_ptr(0xFFFC, kMaxUserAddress2G, true) == PtrVerdict::low);
+    CHECK(check_ptr(0x10000, kMaxUserAddress2G, true) == PtrVerdict::ok);
+    CHECK(check_ptr(0x12EBFBA0, kMaxUserAddress2G, true) == PtrVerdict::ok);
+    CHECK(check_ptr(0x7FFEFFFC, kMaxUserAddress2G, true) == PtrVerdict::ok);
+    // Above 2 GB: rejected without large-address-awareness, accepted with it.
+    CHECK(check_ptr(0x7FFF0000, kMaxUserAddress2G, true) == PtrVerdict::high);
+    CHECK(check_ptr(0x8A3F1200, kMaxUserAddress2G, true) == PtrVerdict::high);
+    CHECK(check_ptr(0x8A3F1200, laa, true) == PtrVerdict::ok);
+    CHECK(check_ptr(0xFFFEFFFC, laa, true) == PtrVerdict::ok);
+    CHECK(check_ptr(0xFFFF0000, laa, true) == PtrVerdict::high);
+    CHECK(check_ptr(0xFFFFFFFF, laa, false) == PtrVerdict::high);
+    // Alignment only where asked (pack data is not always aligned).
+    CHECK(check_ptr(0x8A3F1201, laa, true) == PtrVerdict::misaligned);
+    CHECK(check_ptr(0x8A3F1201, laa, false) == PtrVerdict::ok);
+    CHECK(ptr_ok(0x9000000C, laa, true));
+    CHECK(!ptr_ok(0x9000000C, kMaxUserAddress2G, true));
+    CHECK(std::string(ptr_verdict_name(PtrVerdict::high)) == "high");
+}
+
+static void test_gunarms_names() {
+    CHECK(gunarms_kind("GunArms_Magnum") == ActorKind::gun);
+    CHECK(gunarms_kind("gunarms_smg") == ActorKind::gun);
+    CHECK(gunarms_kind("GunArms_Magnum_Clip") == ActorKind::clip);
+    CHECK(gunarms_kind("GunArms_SMG_CLIP") == ActorKind::clip);
+    CHECK(gunarms_kind("GunArms_Gwendalin") == ActorKind::gun);
+    CHECK(gunarms_kind("GunArms_Varla_Mesh") == ActorKind::gun);  // an arms rig, not a weapon: def_by_actr turns it down
+    CHECK(gunarms_kind("GunArms_") == ActorKind::gun);
+    CHECK(gunarms_kind("GunArms__Clip") == ActorKind::gun);  // no weapon name before _Clip
+    CHECK(gunarms_kind("HUD_Bullet_Magnum") == ActorKind::other);
+    CHECK(gunarms_kind("Motion") == ActorKind::other);
+    CHECK(gunarms_kind("GunArm") == ActorKind::other);
+    CHECK(gunarms_kind("") == ActorKind::other);
+    CHECK(gunarms_kind(nullptr) == ActorKind::other);
+}
+
+static void test_scan_description() {
+    // The magnum's data block as a 4 GB patched game laid it out above 2 GB: (hash, 0, entity)
+    // triples whose entities are all above the 2 GB limit.
+    std::vector<ScanSlot> slots;
+    for (uint32_t off = 0x28; off <= 0xC0; off += 4) {
+        ScanSlot s;
+        s.off = off;
+        s.verdict = SlotVerdict::null;
+        slots.push_back(s);
+    }
+    auto at = [&](uint32_t off) -> ScanSlot& { return slots[(off - 0x28) / 4]; };
+    at(0x64).value = 0x1B2C3D4E, at(0x64).verdict = SlotVerdict::no_instance;  // a hash that happens to be in range
+    at(0x6C).value = 0x8F001000, at(0x6C).verdict = SlotVerdict::rejected, at(0x6C).ptr = PtrVerdict::high;
+    at(0x70).value = 0xC1A2B3C5, at(0x70).verdict = SlotVerdict::rejected, at(0x70).ptr = PtrVerdict::high;
+    at(0x78).value = 0x8F002000, at(0x78).verdict = SlotVerdict::rejected, at(0x78).ptr = PtrVerdict::high;
+    at(0x7C).value = 0x1234567B, at(0x7C).verdict = SlotVerdict::rejected, at(0x7C).ptr = PtrVerdict::misaligned;
+    at(0x90).value = 0x13000000, at(0x90).verdict = SlotVerdict::other_actor, at(0x90).name = "HUD_Bullet_Magnum";
+    at(0x94).value = 0x13001000, at(0x94).verdict = SlotVerdict::mesh_failed, at(0x94).name = "GunArms_Magnum: mesh 9A000000 high";
+    std::vector<std::string> l = describe_scan(slots, kMaxUserAddress2G, 8, 6);
+    CHECK(l.size() == 2);
+    CHECK(l[0].find("39 slots read, pointer limit 7FFEFFFF: 32 null, 4 rejected (3 above the limit, 0 below 0x10000, 1 misaligned), "
+                    "1 without an actor instance, 1 other actors, 1 GunArms meshes not resolved, 0 gun, 0 magazine") == 0);
+    CHECK(l[1] == "+64 1B2C3D4E no actor instance; +6C 8F001000 high; +70 C1A2B3C5 high; +78 8F002000 high; +7C 1234567B misaligned; "
+                  "+90 13000000 actor \"HUD_Bullet_Magnum\"; +94 13001000 mesh not resolved \"GunArms_Magnum: mesh 9A000000 high\"");
+    // Capped: one slot per line, three lines in all -> the summary, one slot, then the rest counted.
+    l = describe_scan(slots, kMaxUserAddress2G, 1, 3);
+    CHECK(l.size() == 3);
+    CHECK(l[1] == "+64 1B2C3D4E no actor instance");
+    CHECK(l[2] == "+6C 8F001000 high; ... 5 more");
+    // Nothing but nulls: the summary alone.
+    std::vector<ScanSlot> empty(3);
+    l = describe_scan(empty, 0xFFFEFFFF, 8, 6);
+    CHECK(l.size() == 1);
+    CHECK(l[0].find("3 slots read, pointer limit FFFEFFFF: 3 null") == 0);
+}
+
+static void test_scan_hint() {
+    // A mini-game's weapon (Stayin' Alive, 2026-11-20): hashes, a grenade, no GunArms actor at all.
+    std::vector<ScanSlot> mini(4);
+    mini[0].verdict = SlotVerdict::rejected, mini[0].ptr = PtrVerdict::misaligned;
+    mini[1].verdict = SlotVerdict::no_instance;
+    mini[2].verdict = SlotVerdict::other_actor, mini[2].name = "Weapon_Grenade";
+    CHECK(scan_hint(mini).find("no GunArms_* actor") == 0);
+    CHECK(scan_hint(mini).find("mini-games") != std::string::npos);
+    // Only the magazine, or a gun mesh that failed: a different sentence.
+    std::vector<ScanSlot> clip_only = mini;
+    clip_only[3].verdict = SlotVerdict::clip;
+    CHECK(scan_hint(clip_only).find("a GunArms actor is there") == 0);
+    std::vector<ScanSlot> failed = mini;
+    failed[3].verdict = SlotVerdict::mesh_failed;
+    CHECK(scan_hint(failed).find("a GunArms actor is there") == 0);
+    // A gun: nothing to explain.
+    std::vector<ScanSlot> ok = mini;
+    ok[3].verdict = SlotVerdict::gun;
+    CHECK(scan_hint(ok).empty());
+}
+
 int main() {
+    test_pointer_range();
+    test_gunarms_names();
+    test_scan_description();
+    test_scan_hint();
     test_bore_fit();
     test_comfort_quaternions();
     test_comfort_levelling();

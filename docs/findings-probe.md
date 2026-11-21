@@ -284,6 +284,31 @@ findings-static.md. Everything below was observed in the running game unless mar
   verified which pack). Not seen for the magnum in Papa's Palace. In VR it is a second gun at the
   head during reloads: a candidate to hide in milestone 4 / the hands version.
 
+## No gun model: a player's report (v0.2.0, 2026-11-20)
+- The report: no gun in the hand, only the red dot; `weapon 2E7B3EC0 (data 12EBFBA0) has no
+  resident GunArms model`. Story levels put cWeapon and its data in one pool around 0x13xxxxxx
+  here (Naked Terror: weapon 13F9FB80, data 13285780; Ballistic Trauma 1404B410 / 134E4AB0; Scream
+  Train 13AF2E00 / 1307D5D0; the same addresses with the low 2 GB reserved at the loadout: the
+  level's objects come from pools made at boot). The **mini-games** put the weapon around
+  0x2E9xxxxx and its data around 0x12E/0x12F: Stayin' Alive 2E92ECC0 / 12E8F080 (then 2E933E30 /
+  12E8F000), Victim Support 2E933E30 / 12F8BE20 - the report's pattern.
+- **The mini-games load no weapon hud pack and no arms pack** (Stayin' Alive opens only
+  `w_survivalmode_*`, `w_global*`, `w_civilians*`; the game folder has hud weapon packs only for
+  the story levels l1..l9), so their weapon data has the hashes of the triples but no GunArms
+  entities (`vr gunscan`: only a `Weapon_Grenade` actor). No model can be found; only a model the
+  mod loads itself from a story level's `<level>_hud_<weapon>.pc` could be drawn there.
+- **Large-address-aware exe**: with `probe.ini high_addresses=64` (the low 2 GB reserved at load)
+  everything of the game's lands above 2 GB (player 87F2F0D0, weapon 88C8FB80, data 87F75780,
+  entities 0x87Axxxxx); v0.2.0's `< 0x7FFF0000` checks then turned down the weapon pointer itself
+  (nothing logged). Checked against GetSystemInfo's maximum address (0xFFFEFFFF here) the magnum is
+  drawn as before.
+- **Player 1 in Ballistic Trauma is Agent G** (black suit sleeves in the game's reload animation,
+  `game_arms=1`); the level loads hud_armsg before hud_armsw, as Papa's Palace and Scream Train do
+  (Naked Terror: armsv before armsc, Varla). The gun model was found in all of them: G as player 1
+  makes no difference. Candi is player 2 only (Naked Terror). The levels after Naked Terror were
+  reached by setting the profile's progress bytes `[[0x99B748]+0x228]+0x2D..0x2F` to 9 in memory
+  (the "Unlock Everything" script function 0x424450 writes them), never in the save.
+
 ## Comfort and release (milestone 4, 2026-11-17, sim, 1920x1200 console session)
 - **The reload animation's draws**: logging every entity the engine draws through 0x7697A0 (the
   entity draw: thiscall, one argument, ret 4; vtable slot 0xA4 of the drawable entity classes,

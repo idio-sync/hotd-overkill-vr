@@ -21,6 +21,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         hv::init_paths();  // also decides development vs release (hovr\probe.ini, [vr] dev=1)
         hv::log_open();
         hv::logf("hovr loaded into %ls, exe base %p", hv::g_game_dir.c_str(), (void*)hv::exe_base());
+        hv::reserve_low_address_space();  // development only (probe.ini high_addresses): tests above 2 GB
         // The game hooks patch addresses of one build of the game: on any other build, or a copy
         // changed where the mod hooks or reads it, a release install stays a plain XInput
         // pass-through (development keeps only the harness's own import hooks: harness.h).

@@ -6,6 +6,23 @@ All notable changes to House of the Dead: Overkill VR. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **No gun in your hand with a 4 GB patched (Large Address Aware) `HOTD_NG.exe`** once the game's
+  memory lies above 2 GB: the mod turned down every game address above 2 GB, so the gun model was
+  never found (with nothing in the log about why). It now accepts the whole address range Windows
+  gives the game.
+- A weapon whose model wasn't found when it was first seen (while the level loads) is looked for
+  again every second for two minutes, instead of never again until the level ends.
+
+### Changed
+
+- When no gun model is found, `hovr\hovr.log` now says why: what each place the mod looked at
+  held and why it was passed over (an address out of range, no model there, another model), and
+  what that most likely means. The mini-games (Stayin' Alive, Victim Support, Money Shot II) load
+  no first-person weapon models at all, so they show no gun in your hand, only the aim; the log
+  and the README's known issues now say so.
+
 ## [0.2.0] - 2026-11-20
 
 Guns that feel like guns, and shots that go where the gun points. The guns' parts move, each shot

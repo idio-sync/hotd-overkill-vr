@@ -202,6 +202,15 @@ Development harness only. Write lines to `hovr\cmd.txt` (`tools\cmd.ps1 'cmd' ..
   `vr aim`, `vr gesture` switch those settings live; `vr god 1` keeps player 1 alive for tests
   (idle gameplay gets the player killed quickly); `vr actions 1` logs the game's input actions as
   they change.
+- Gun model: `vr gunscan [LIMIT]` logs the current weapon's data scan slot by slot, as a failed
+  resolve does in every install (`gun model:   +6C 87A3A180 gun "GunArms_Magnum"; ...`, then a
+  `so:` line with the likely reading); LIMIT (hex) replaces the pointer limit for that scan, e.g.
+  `7FFEFFFF` shows what v0.2.0's 2 GB check made of it. Addresses above 2 GB (a large-address-aware
+  exe): `[probe] high_addresses=MB` in `probe.ini` reserves all but MB of the free space below 2 GB
+  at load, so the game's allocations land above it (e.g. 64; the exe must have the LAA flag, as in
+  a copy made with `Characteristics |= 0x20`); the command `reservelow MB` does the same later
+  (on the loadout screen it moved nothing: the level's objects come from pools made at boot).
+  Development only; a release install ignores both.
 - Gun model: `vr gunmodel [0|1]` (log, switch off/on), `vr gunview aim|back|right|left|front|top|bottom`
   (sim head/hand presets for looking at the gun), `vr barrelline 1` (a red line from the muzzle to
   the aim point), `vr clipout F` (hold the magazine F of the way out; no F = from the reload),

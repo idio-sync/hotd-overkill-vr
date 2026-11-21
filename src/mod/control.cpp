@@ -24,6 +24,8 @@
 //   aimorigin X Y Z | off   replace the shot origin
 //   dump ADDR SIZE NAME     raw bytes to hovr\NAME.bin (for diffing game state)
 //   findvt VA               log heap objects whose vtable is VA (va:0x... for an image VA)
+//   reservelow MB           reserve the free address space below 2 GB but MB of it (large-address-aware
+//                           exe: what the game allocates afresh from then on lands above 2 GB; tests)
 //   log TEXT                write TEXT to the log
 //   vr yaw D | vr pitch D   simulated head yaw (+ right) / pitch (+ up), degrees
 //   vr ipd M | vr unit M    eye separation in metres / metres per game unit
@@ -77,6 +79,8 @@
 //                           the height of the zombie nearest the view's centre
 //   vr actions 0|1          dev: log the game's input action values (fire 3, reload 5, weapon 0xB/0xC)
 //   vr gunmodel [0|1]       log the gun model state (and switch drawing it off/on)
+//   vr gunscan [LIMIT]      log the current weapon's data scan slot by slot (as a failed resolve does);
+//                           LIMIT (hex) replaces the pointer limit for it, e.g. 7FFEFFFF = v0.2.0's
 //   vr gunset W FIELD V...  per-weapon tuning live: W = magnum, gold_magnum, handcannon, pump,
 //                           autoshotgun, smg, rifle, minigun, crossbow; FIELD = show 0|1, clip 0|1|2,
 //                           grip X Y Z, barrel DX DY DZ, muzzle X Y Z, clipdir DX DY DZ (model cm),
@@ -459,6 +463,8 @@ FrameRequests control_tick() {
             } else if (what == "gunmodel") {
                 if (!a.empty()) gunmodel_enable(v != 0);
                 gunmodel_log();
+            } else if (what == "gunscan") {
+                gunmodel_scan_log(a.empty() ? 0 : uint32_t(strtoul(a.c_str(), nullptr, 16)));
             } else if (what == "gunset") {
                 std::string field;
                 float vals[4];
@@ -599,6 +605,10 @@ FrameRequests control_tick() {
                 }
                 logf("dump %s (%p) %d bytes -> %s.bin", a.c_str(), reinterpret_cast<void*>(addr), n, name.c_str());
             }
+        } else if (cmd == "reservelow") {
+            int mb = 0;
+            ss >> mb;
+            reserve_low_address_space(mb > 0 ? mb : 1);
         } else if (cmd == "findvt") {
             // findvt VA: heap objects whose first dword is the (rebased) vtable VA
             std::string a;
@@ -606,7 +616,7 @@ FrameRequests control_tick() {
             const DWORD target = DWORD(parse_addr(a));
             int hits = 0;
             MEMORY_BASIC_INFORMATION mbi;
-            for (uintptr_t p = 0x10000; p < 0x7FFF0000 && hits < 32; p += mbi.RegionSize) {
+            for (uintptr_t p = 0x10000; p < max_user_address() && hits < 32; p += mbi.RegionSize) {
                 if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof mbi)) break;
                 if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE || !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) ||
                     (mbi.Protect & PAGE_GUARD))
@@ -625,7 +635,7 @@ FrameRequests control_tick() {
             ss >> text;
             int hits = 0;
             MEMORY_BASIC_INFORMATION mbi;
-            for (uintptr_t p = 0x10000; !text.empty() && p < 0x7FFF0000 && hits < 32; p += mbi.RegionSize) {
+            for (uintptr_t p = 0x10000; !text.empty() && p < max_user_address() && hits < 32; p += mbi.RegionSize) {
                 if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof mbi)) break;
                 if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE || !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) ||
                     (mbi.Protect & PAGE_GUARD))

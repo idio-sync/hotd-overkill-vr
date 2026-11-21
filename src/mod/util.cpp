@@ -1,6 +1,7 @@
 // Paths, log, import/vtable patching, inline detours.
 #include "common.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -54,6 +55,62 @@ void logf(const char* fmt, ...) {
 }
 
 uintptr_t exe_base() { return reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)); }
+
+uintptr_t max_user_address() {
+    static const uintptr_t top = [] {
+        SYSTEM_INFO si{};
+        GetSystemInfo(&si);
+        return reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+    }();
+    return top;
+}
+
+// Development only (probe.ini [probe] high_addresses=MB; 0, the default, and every release install:
+// off): reserve the free address space below 2 GB at load, biggest regions first, until only MB of
+// it is left free. With a large-address-aware exe the game's later allocations (heap segments,
+// packs, D3D objects) then land above 2 GB, as they can on a player's PC once the low 2 GB fills
+// up. The reservations are never released (the run is a test run). The command file's `reservelow
+// MB` does the same later (e.g. on the loadout screen: what the level then allocates afresh goes
+// high, while the heap's existing free space stays low).
+void reserve_low_address_space(int keep_mb) {
+    if (!dev_harness()) return;
+    if (keep_mb < 0) keep_mb = harness_int(L"high_addresses", 0, 0);
+    if (keep_mb <= 0) return;
+    if (max_user_address() < 0x80000000u) {
+        logf("harness: reserving low address space (keep %d MB) skipped: the exe is not large-address-aware (user addresses end at %p)", keep_mb,
+             reinterpret_cast<void*>(max_user_address()));
+        return;
+    }
+    struct Region {
+        uintptr_t base;
+        size_t size;
+    };
+    std::vector<Region> free_regions;
+    size_t free_total = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (uintptr_t p = 0x10000; p < 0x80000000u && VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof mbi);) {
+        const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress), end = (std::min)(uintptr_t(base + mbi.RegionSize), uintptr_t(0x80000000u));
+        if (mbi.State == MEM_FREE) {
+            // Reservations start on the 64 KB allocation granularity.
+            const uintptr_t b = (base + 0xFFFF) & ~uintptr_t(0xFFFF), e = end & ~uintptr_t(0xFFFF);
+            if (e > b) free_regions.push_back({b, e - b}), free_total += e - b;
+        }
+        if (end <= p) break;
+        p = end;
+    }
+    std::sort(free_regions.begin(), free_regions.end(), [](const Region& a, const Region& b) { return a.size > b.size; });
+    const size_t keep = size_t(keep_mb) << 20;
+    size_t reserved = 0;
+    int blocks = 0;
+    for (const Region& r : free_regions) {
+        if (free_total - reserved <= keep) break;
+        const size_t want = (std::min)(r.size, (free_total - reserved - keep + 0xFFFF) & ~size_t(0xFFFF));
+        if (VirtualAlloc(reinterpret_cast<void*>(r.base), want, MEM_RESERVE, PAGE_NOACCESS)) reserved += want, ++blocks;
+    }
+    logf("harness: low address space reserved: %zu of the %zu MB free below 2 GB in %d blocks (%zu MB left there): the game's "
+         "allocations go above 2 GB from here on (development only)",
+         reserved >> 20, free_total >> 20, blocks, (free_total - reserved) >> 20);
+}
 
 bool readable(uintptr_t addr) {
     MEMORY_BASIC_INFORMATION mbi{};
